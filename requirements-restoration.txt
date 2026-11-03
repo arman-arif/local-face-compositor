@@ -1,0 +1,3 @@
+# Optional. Install after the main requirements if you want the GFPGAN checkbox.
+# PyTorch/TorchVision versions must match your Python and CUDA setup; see pytorch.org/get-started/locally.
+gfpgan>=1.3.8

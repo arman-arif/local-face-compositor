@@ -4,6 +4,7 @@ __pycache__/
 data/uploads/*
 data/outputs/*
 models/*.onnx
+models/*.pth
 !data/uploads/.gitkeep
 !data/outputs/.gitkeep
 !models/.gitkeep

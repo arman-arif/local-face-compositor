@@ -1,73 +1,359 @@
-import shutil, uuid
+import shutil
+import threading
+import uuid
 from pathlib import Path
+from typing import Literal
+
 import cv2
-from fastapi import FastAPI, File, UploadFile, HTTPException
+import numpy as np
+import onnxruntime as ort
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parent
-DATA = ROOT / 'data'; UPLOADS = DATA / 'uploads'; OUTPUTS = DATA / 'outputs'; MODELS = ROOT / 'models'
-for p in (UPLOADS, OUTPUTS, MODELS): p.mkdir(parents=True, exist_ok=True)
-app = FastAPI(title='Local Face Compositor')
-app.mount('/outputs', StaticFiles(directory=OUTPUTS), name='outputs')
-ALLOWED = {'.jpg', '.jpeg', '.png', '.webp'}
+DATA = ROOT / "data"
+UPLOADS = DATA / "uploads"
+OUTPUTS = DATA / "outputs"
+MODELS = ROOT / "models"
+INSIGHTFACE_ROOT = ROOT / ".insightface"
+for folder in (UPLOADS, OUTPUTS, MODELS):
+    folder.mkdir(parents=True, exist_ok=True)
+
+app = FastAPI(title="Local Face Compositor", version="0.2.0")
+app.mount("/outputs", StaticFiles(directory=OUTPUTS), name="outputs")
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+MAX_IMAGE_SIDE = 10000
+
+# Expensive model initialization is cached for later requests.
+_MODEL_LOCK = threading.Lock()
+_FACE_APP = None
+_SWAPPER = None
+_PROVIDER_NAMES: list[str] = []
+
 
 async def save_image(upload: UploadFile, folder: Path) -> Path:
-    ext = Path(upload.filename or '').suffix.lower()
-    if ext not in ALLOWED: raise HTTPException(400, 'Use JPG, PNG, or WebP images.')
+    extension = Path(upload.filename or "").suffix.lower()
+    if extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(400, "Use JPG, PNG, or WebP images.")
     content = await upload.read()
-    if not content: raise HTTPException(400, 'An uploaded image is empty.')
-    if len(content) > 25 * 1024 * 1024: raise HTTPException(413, 'Each image must be 25 MB or smaller.')
-    path = folder / f'{uuid.uuid4().hex}{ext}'; path.write_bytes(content)
-    if cv2.imread(str(path)) is None:
-        path.unlink(missing_ok=True); raise HTTPException(400, f'Could not decode {upload.filename}.')
+    if not content:
+        raise HTTPException(400, "An uploaded image is empty.")
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "Each image must be 25 MB or smaller.")
+
+    path = folder / f"{uuid.uuid4().hex}{extension}"
+    path.write_bytes(content)
+    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if image is None:
+        path.unlink(missing_ok=True)
+        raise HTTPException(400, f"Could not decode {upload.filename}.")
+    if max(image.shape[:2]) > MAX_IMAGE_SIDE:
+        path.unlink(missing_ok=True)
+        raise HTTPException(413, f"Image dimensions must not exceed {MAX_IMAGE_SIDE} pixels per side.")
     return path
 
-def run_swap(sources: list[Path], target_path: Path, output_path: Path):
-    try:
-        from insightface.app import FaceAnalysis
-        from insightface.model_zoo import get_model
-    except Exception as e:
-        raise RuntimeError('InsightFace is not installed. Run pip install -r requirements.txt.') from e
-    model_path = MODELS / 'inswapper_128.onnx'
+
+def get_models():
+    """Initialize InsightFace once; use CUDA when ONNX Runtime has a CUDA provider."""
+    global _FACE_APP, _SWAPPER, _PROVIDER_NAMES
+    if _FACE_APP is not None and _SWAPPER is not None:
+        return _FACE_APP, _SWAPPER, _PROVIDER_NAMES
+    with _MODEL_LOCK:
+        if _FACE_APP is not None and _SWAPPER is not None:
+            return _FACE_APP, _SWAPPER, _PROVIDER_NAMES
+        try:
+            from insightface.app import FaceAnalysis
+            from insightface.model_zoo import get_model
+        except Exception as exc:
+            raise RuntimeError(
+                "InsightFace is not installed. Activate your virtual environment and run pip install -r requirements.txt."
+            ) from exc
+
+        model_path = MODELS / "inswapper_128.onnx"
+        if not model_path.exists():
+            raise RuntimeError(
+                "Missing models/inswapper_128.onnx. Add a face-swap model you are licensed to use; model weights are not bundled."
+            )
+
+        available = ort.get_available_providers()
+        providers = (["CUDAExecutionProvider", "CPUExecutionProvider"]
+                     if "CUDAExecutionProvider" in available else ["CPUExecutionProvider"])
+        ctx_id = 0 if "CUDAExecutionProvider" in available else -1
+        try:
+            face_app = FaceAnalysis(
+                name="buffalo_l",
+                providers=providers,
+                root=str(INSIGHTFACE_ROOT),
+            )
+            face_app.prepare(ctx_id=ctx_id, det_size=(640, 640))
+            swapper = get_model(str(model_path), providers=providers)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not initialize InsightFace models. Check the model files and ONNX Runtime installation. Details: {exc}"
+            ) from exc
+        _FACE_APP, _SWAPPER, _PROVIDER_NAMES = face_app, swapper, providers
+        return _FACE_APP, _SWAPPER, _PROVIDER_NAMES
+
+
+def face_area(face) -> float:
+    width = max(0.0, float(face.bbox[2] - face.bbox[0]))
+    height = max(0.0, float(face.bbox[3] - face.bbox[1]))
+    confidence = float(getattr(face, "det_score", 1.0))
+    return width * height * confidence
+
+
+def make_face_mask(face, affine: np.ndarray, size: int = 128) -> np.ndarray:
+    """Build a soft face mask in the swap model's aligned-crop coordinate space."""
+    mask = np.zeros((size, size), dtype=np.uint8)
+    landmarks = getattr(face, "landmark_2d_106", None)
+    # Face outline indices follow the 106-point contour used by common InsightFace swap pipelines.
+    contour_indices = np.array([
+        1, 9, 10, 11, 12, 13, 14, 15, 16, 2, 3, 4, 5, 6, 7, 8, 0,
+        24, 23, 22, 21, 20, 19, 18, 32, 31, 30, 29, 28, 27, 26, 25,
+        17, 101, 105, 104, 103, 51, 49, 48, 43
+    ], dtype=np.int32)
+
+    if landmarks is not None and len(landmarks) > int(contour_indices.max()):
+        points = np.asarray(landmarks, dtype=np.float32)[contour_indices].reshape(1, -1, 2)
+        points_crop = cv2.transform(points, affine).round().astype(np.int32)
+        cv2.fillPoly(mask, points_crop, 255)
+        # Expand slightly to cover the edge of the swapped face, but not the full hairstyle.
+        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
+    else:
+        # Fallback mask for models that don't expose 106 facial landmarks.
+        cv2.ellipse(mask, (size // 2, int(size * 0.56)), (int(size * 0.39), int(size * 0.45)), 0, 0, 360, 255, -1)
+
+    # Feather only the edge; preserve the center of the face at full opacity.
+    return cv2.GaussianBlur(mask, (15, 15), sigmaX=0, sigmaY=0).astype(np.float32) / 255.0
+
+
+def match_lab_color(swapped: np.ndarray, reference: np.ndarray, mask: np.ndarray, strength: float) -> np.ndarray:
+    """Conservative LAB mean/std matching against target face lighting and color."""
+    if strength <= 0:
+        return swapped
+    src_lab = cv2.cvtColor(swapped, cv2.COLOR_BGR2LAB).astype(np.float32)
+    ref_lab = cv2.cvtColor(reference, cv2.COLOR_BGR2LAB).astype(np.float32)
+    valid = mask > 0.35
+    if np.count_nonzero(valid) < 100:
+        return swapped
+
+    corrected = src_lab.copy()
+    # Match luminance more strongly than chroma to preserve the source person's skin tone.
+    channel_strengths = (min(strength, 0.8), strength * 0.55, strength * 0.45)
+    for channel, amount in enumerate(channel_strengths):
+        src_values = src_lab[:, :, channel][valid]
+        ref_values = ref_lab[:, :, channel][valid]
+        src_std = float(np.std(src_values))
+        ref_std = float(np.std(ref_values))
+        if src_std < 1e-3:
+            continue
+        adjusted = (src_lab[:, :, channel] - float(np.mean(src_values))) * (ref_std / src_std)
+        adjusted += float(np.mean(ref_values))
+        corrected[:, :, channel] = (
+            src_lab[:, :, channel] * (1.0 - amount) + adjusted * amount
+        )
+    corrected = np.clip(corrected, 0, 255).astype(np.uint8)
+    result = cv2.cvtColor(corrected, cv2.COLOR_LAB2BGR)
+    # Apply the correction mostly inside the face mask so crop background remains stable.
+    local_alpha = np.clip(mask, 0, 1)[..., None]
+    return np.clip(result.astype(np.float32) * local_alpha + swapped.astype(np.float32) * (1-local_alpha), 0, 255).astype(np.uint8)
+
+
+def restore_face_optional(face_crop: np.ndarray) -> np.ndarray:
+    """Optional GFPGAN restoration. It never fetches weights automatically."""
+    model_path = MODELS / "GFPGANv1.4.pth"
     if not model_path.exists():
-        raise RuntimeError('Missing models/inswapper_128.onnx. Add a model you are licensed to use; weights are not bundled.')
-    providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        raise RuntimeError(
+            "Face restoration was selected, but models/GFPGANv1.4.pth is missing. Add licensed weights or uncheck restoration."
+        )
     try:
-        face_app = FaceAnalysis(name='buffalo_l', providers=providers, root=str(ROOT / '.insightface'))
-        face_app.prepare(ctx_id=0, det_size=(640, 640))
-        swapper = get_model(str(model_path), providers=providers)
-    except Exception as e:
-        raise RuntimeError(f'Could not initialize models / ONNX Runtime: {e}') from e
-    target = cv2.imread(str(target_path)); target_faces = face_app.get(target)
-    if not target_faces: raise RuntimeError('No face detected in target image.')
-    target_face = max(target_faces, key=lambda f: (f.bbox[2]-f.bbox[0])*(f.bbox[3]-f.bbox[1]))
-    candidates = []
-    for p in sources:
-        im = cv2.imread(str(p)); faces = face_app.get(im)
+        import torch
+        from gfpgan import GFPGANer
+    except Exception as exc:
+        raise RuntimeError(
+            "GFPGAN is not installed. See README.md for optional restoration setup, or uncheck face restoration."
+        ) from exc
+    try:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        restorer = GFPGANer(
+            model_path=str(model_path), upscale=1, arch="clean", channel_multiplier=2,
+            bg_upsampler=None, device=device,
+        )
+        _cropped_faces, restored_faces, _restored_image = restorer.enhance(
+            face_crop, has_aligned=True, only_center_face=True, paste_back=False
+        )
+        if restored_faces:
+            return cv2.resize(restored_faces[0], (face_crop.shape[1], face_crop.shape[0]), interpolation=cv2.INTER_LANCZOS4)
+        raise RuntimeError("GFPGAN did not return a restored face.")
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"GFPGAN restoration failed: {exc}") from exc
+
+
+def blend_face(
+    target: np.ndarray,
+    swapped_crop: np.ndarray,
+    affine: np.ndarray,
+    mask_crop: np.ndarray,
+    blend_strength: float,
+    blend_mode: Literal["feather", "seamless"],
+) -> np.ndarray:
+    height, width = target.shape[:2]
+    inverse = cv2.invertAffineTransform(affine)
+    warped = cv2.warpAffine(
+        swapped_crop, inverse, (width, height), flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0),
+    )
+    warped_mask = cv2.warpAffine(
+        mask_crop, inverse, (width, height), flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+    )
+    alpha = np.clip(warped_mask * float(blend_strength), 0, 1)
+    if not np.any(alpha > 0.02):
+        raise RuntimeError("The face mask is empty. Try a clearer target image.")
+
+    if blend_mode == "seamless":
+        # Clone only the local face ROI; a feathered alpha blend remains the fallback.
+        binary = (warped_mask > 0.18).astype(np.uint8) * 255
+        ys, xs = np.where(binary > 0)
+        if len(xs):
+            pad = 6
+            x1, x2 = max(0, int(xs.min())-pad), min(width, int(xs.max())+pad+1)
+            y1, y2 = max(0, int(ys.min())-pad), min(height, int(ys.max())+pad+1)
+            roi_mask = binary[y1:y2, x1:x2]
+            if roi_mask.shape[0] >= 10 and roi_mask.shape[1] >= 10:
+                try:
+                    target_roi = target[y1:y2, x1:x2]
+                    swapped_roi = warped[y1:y2, x1:x2]
+                    clone = cv2.seamlessClone(
+                        swapped_roi, target_roi, roi_mask,
+                        (target_roi.shape[1] // 2, target_roi.shape[0] // 2),
+                        cv2.NORMAL_CLONE,
+                    )
+                    # Limit clone changes to the face mask and respect blend strength.
+                    result = target.astype(np.float32).copy()
+                    local_alpha = alpha[y1:y2, x1:x2, None]
+                    result[y1:y2, x1:x2] = (
+                        clone.astype(np.float32) * local_alpha
+                        + target_roi.astype(np.float32) * (1 - local_alpha)
+                    )
+                    return np.clip(result, 0, 255).astype(np.uint8)
+                except cv2.error:
+                    pass
+
+    alpha3 = alpha[..., None]
+    result = warped.astype(np.float32) * alpha3 + target.astype(np.float32) * (1 - alpha3)
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+def run_swap(
+    sources: list[Path],
+    target_path: Path,
+    output_path: Path,
+    color_match_strength: float = 0.35,
+    blend_strength: float = 0.95,
+    blend_mode: Literal["feather", "seamless"] = "feather",
+    restore_face: bool = False,
+) -> tuple[str, str]:
+    face_app, swapper, providers = get_models()
+    target = cv2.imread(str(target_path), cv2.IMREAD_COLOR)
+    if target is None:
+        raise RuntimeError("Could not decode the target image.")
+    target_faces = face_app.get(target)
+    if not target_faces:
+        raise RuntimeError("No face detected in target image. Use a clear image where the face is visible.")
+    target_face = max(target_faces, key=face_area)
+
+    source_candidates = []
+    for path in sources:
+        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if image is None:
+            continue
+        faces = face_app.get(image)
         if faces:
-            face = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0])*(f.bbox[3]-f.bbox[1]))
-            area = (face.bbox[2]-face.bbox[0])*(face.bbox[3]-face.bbox[1])
-            candidates.append((area, face))
-    if not candidates: raise RuntimeError('No face detected in source images. Try clearer, front-facing references.')
-    result = swapper.get(target, target_face, max(candidates, key=lambda x: x[0])[1], paste_back=True)
-    if not cv2.imwrite(str(output_path), result): raise RuntimeError('Could not save output image.')
+            source_candidates.append((max(faces, key=face_area), image))
+    if not source_candidates:
+        raise RuntimeError("No face detected in source images. Try clearer, front-facing reference photos.")
+    source_face, _source_image = max(source_candidates, key=lambda candidate: face_area(candidate[0]))
 
-@app.get('/', response_class=HTMLResponse)
-def index(): return (ROOT / 'static' / 'index.html').read_text(encoding='utf-8')
-
-@app.post('/api/composite')
-async def composite(target: UploadFile = File(...), sources: list[UploadFile] = File(...)):
-    if not sources: raise HTTPException(400, 'Upload at least one source image.')
-    job = UPLOADS / uuid.uuid4().hex; job.mkdir(parents=True, exist_ok=True)
     try:
-        saved_sources = [await save_image(f, job) for f in sources[:12]]
-        saved_target = await save_image(target, job)
-        output = OUTPUTS / f'{uuid.uuid4().hex}.png'
-        try: run_swap(saved_sources, saved_target, output)
-        except RuntimeError as e: raise HTTPException(503, str(e))
-        return {'ok': True, 'output_url': f'/outputs/{output.name}', 'message': 'Processing completed locally.'}
-    finally: shutil.rmtree(job, ignore_errors=True)
+        # paste_back=False gives the 128x128 aligned face and its image-to-crop affine matrix.
+        swapped_crop, affine = swapper.get(target, target_face, source_face, paste_back=False)
+        aligned_target = cv2.warpAffine(target, affine, (128, 128), flags=cv2.INTER_LINEAR, borderValue=0)
+        mask = make_face_mask(target_face, affine, 128)
+        if restore_face:
+            swapped_crop = restore_face_optional(swapped_crop)
+        swapped_crop = match_lab_color(swapped_crop, aligned_target, mask, float(color_match_strength))
+        result = blend_face(
+            target, swapped_crop, affine, mask,
+            float(blend_strength), blend_mode,
+        )
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"Face compositing failed: {exc}") from exc
 
-@app.get('/api/health')
-def health(): return {'ok': True, 'model_present': (MODELS / 'inswapper_128.onnx').exists()}
+    if not cv2.imwrite(str(output_path), result):
+        raise RuntimeError("Could not save output image.")
+    device = "CUDA GPU" if "CUDAExecutionProvider" in providers else "CPU"
+    source_note = "largest detected source face"
+    return device, source_note
+
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    return (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+
+@app.post("/api/composite")
+async def composite(
+    target: UploadFile = File(...),
+    sources: list[UploadFile] = File(...),
+    color_match_strength: float = Form(0.35),
+    blend_strength: float = Form(0.95),
+    blend_mode: Literal["feather", "seamless"] = Form("feather"),
+    restore_face: bool = Form(False),
+):
+    if not sources:
+        raise HTTPException(400, "Upload at least one source image.")
+    if not 0 <= color_match_strength <= 1:
+        raise HTTPException(422, "Color-match strength must be between 0 and 1.")
+    if not 0.1 <= blend_strength <= 1:
+        raise HTTPException(422, "Blend strength must be between 0.1 and 1.0.")
+    job = UPLOADS / uuid.uuid4().hex
+    job.mkdir(parents=True, exist_ok=True)
+    try:
+        saved_sources = [await save_image(file, job) for file in sources[:12]]
+        saved_target = await save_image(target, job)
+        output = OUTPUTS / f"{uuid.uuid4().hex}.png"
+        try:
+            device, source_note = run_swap(
+                saved_sources, saved_target, output,
+                color_match_strength=color_match_strength,
+                blend_strength=blend_strength,
+                blend_mode=blend_mode,
+                restore_face=restore_face,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from exc
+        return {
+            "ok": True,
+            "output_url": f"/outputs/{output.name}",
+            "message": f"Completed locally using {device}. Source selected: {source_note}.",
+            "device": device,
+        }
+    finally:
+        shutil.rmtree(job, ignore_errors=True)
+
+
+@app.get("/api/health")
+def health():
+    return {
+        "ok": True,
+        "swap_model_present": (MODELS / "inswapper_128.onnx").exists(),
+        "restoration_model_present": (MODELS / "GFPGANv1.4.pth").exists(),
+        "onnx_providers": ort.get_available_providers(),
+    }
