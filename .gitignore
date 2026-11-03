@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+.insightface/
+data/uploads/*
+data/outputs/*
+models/*.onnx
+!data/uploads/.gitkeep
+!data/outputs/.gitkeep
+!models/.gitkeep
