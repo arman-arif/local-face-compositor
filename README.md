@@ -11,6 +11,7 @@ A browser-based local face-compositing app using FastAPI, OpenCV, InsightFace an
 - Adds soft feather blending and OpenCV seamless-clone blending modes.
 - Adds an opt-in GFPGAN restoration hook. It is off by default because restoration can modify identity details.
 - Adds before/after previews, processing feedback, input-size checks and an ONNX provider status endpoint.
+- Redesigned interface: drag-and-drop uploads, model status checks, a before/after slider with zoom, and a history of results from the current session.
 
 ## Requirements and local setup
 

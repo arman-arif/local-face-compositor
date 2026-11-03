@@ -4,36 +4,1248 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Local Face Compositor</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23f2b13c'/%3E%3Cpath d='M12 4v16' stroke='%231a1204' stroke-width='2'/%3E%3Ccircle cx='12' cy='12' r='5.5' fill='none' stroke='%231a1204' stroke-width='2'/%3E%3C/svg%3E">
 <style>
-:root{color-scheme:light;--ink:#172033;--muted:#64748b;--line:#dbe3ef;--blue:#2563eb;--panel:#fff;--bg:#f4f7fb}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}main{max-width:1180px;margin:0 auto;padding:30px 18px 56px}header{margin-bottom:24px}h1{margin:0 0 6px;font-size:clamp(1.7rem,4vw,2.3rem);letter-spacing:-.04em}p{margin:0;color:var(--muted)}.layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:20px;box-shadow:0 8px 28px #1e293b08}h2{margin:0 0 14px;font-size:1.05rem}.field{margin-bottom:18px}label{display:block;font-weight:650;margin-bottom:8px}.hint{display:block;color:var(--muted);font-size:.88rem;font-weight:400;margin-top:3px}input[type=file]{width:100%;border:1px dashed #b8c6da;background:#f8faff;border-radius:12px;padding:13px}.preview-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px}.preview{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#f8fafc;min-height:110px;display:flex;align-items:center;justify-content:center}.preview img{width:100%;height:180px;object-fit:contain;display:block}.empty{color:#94a3b8;padding:18px;text-align:center;font-size:.9rem}.settings{border-top:1px solid var(--line);padding-top:16px;margin-top:8px}.setting{margin:14px 0}.setting-top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px}.setting-top label{margin:0}.setting output{font-variant-numeric:tabular-nums;color:var(--muted);font-size:.9rem}input[type=range]{width:100%;accent-color:var(--blue)}select{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px;background:white;font:inherit}.check{display:flex;align-items:flex-start;gap:9px;font-weight:500}.check input{margin-top:5px}.check span{color:var(--muted);font-size:.88rem;font-weight:400;display:block}button{width:100%;border:0;border-radius:12px;padding:13px 16px;color:white;background:var(--blue);font:inherit;font-weight:700;cursor:pointer}button:disabled{opacity:.55;cursor:wait}.status{margin-top:12px;padding:12px;border-radius:10px;background:#f1f5f9;color:#475569;white-space:pre-wrap;overflow-wrap:anywhere}.status.error{background:#fff1f2;color:#9f1239}.notice{margin-top:18px;padding:13px 15px;background:#eef6ff;border:1px solid #d6e8ff;border-radius:12px;color:#24466f;font-size:.9rem}.result{margin-top:16px}.compare{display:grid;grid-template-columns:1fr 1fr;gap:10px}.compare figure{margin:0;min-width:0}.compare figcaption{color:var(--muted);font-size:.85rem;margin:0 0 6px}.compare img{display:block;width:100%;height:360px;object-fit:contain;background:#f8fafc;border:1px solid var(--line);border-radius:12px}.download{display:inline-block;margin-top:12px;color:var(--blue);font-weight:700}.status-line{font-size:.84rem;color:var(--muted);margin-top:12px}@media(max-width:800px){.layout{grid-template-columns:1fr}.compare img{height:270px}main{padding-top:22px}}@media(max-width:480px){.compare{grid-template-columns:1fr}.compare img{height:320px}}
+/* Greys are deliberately untinted: a coloured UI would bias how skin tones read in the preview. */
+:root {
+  color-scheme: dark;
+  --canvas: #0d0d0d;
+  --bg: #141414;
+  --surface: #1c1c1c;
+  --surface-2: #262626;
+  --line: #303030;
+  --line-strong: #5a5a5a;
+  --text: #ededed;
+  --muted: #a8a8a8;
+  --accent: #f2b13c;
+  --accent-hover: #ffc861;
+  --on-accent: #1a1204;
+  --ok: #7fd49a;
+  --danger: #ff9b8e;
+  --danger-bg: #2d1815;
+  --radius: 10px;
+  --radius-sm: 7px;
+  --rail-inset: 5px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+h1, h2, p { margin: 0; }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+code { font-family: var(--mono); font-size: .92em; overflow-wrap: anywhere; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.vh {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+
+/* Top bar */
+.topbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--bg);
+}
+.brand { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.brand svg { flex: none; color: var(--accent); }
+h1 { font-size: 15px; font-weight: 650; letter-spacing: -.01em; white-space: nowrap; }
+.chips { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px;
+  border: 1px solid var(--line); border-radius: 99px; color: var(--muted); font-size: 12px; white-space: nowrap;
+}
+.chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); }
+.chip[data-tone="ok"]::before { background: var(--ok); }
+.chip[data-tone="bad"] { color: var(--danger); border-color: #5c322c; }
+.chip[data-tone="bad"]::before { background: var(--danger); }
+
+/* App shell */
+.app { display: grid; grid-template-columns: 376px minmax(0, 1fr); min-height: 0; }
+.rail {
+  display: flex; flex-direction: column; min-height: 0;
+  border-right: 1px solid var(--line); background: var(--bg);
+}
+.rail-scroll {
+  flex: 1; min-height: 0; overflow-y: auto; padding: 4px var(--rail-inset) 16px 16px;
+  scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; scrollbar-gutter: stable;
+}
+.rail-foot { padding: 12px 16px 14px; border-top: 1px solid var(--line); background: var(--bg); }
+
+/* Steps */
+.step { padding: 14px 0 16px; border-bottom: 1px solid var(--line); }
+.step-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.step-no {
+  display: grid; place-items: center; flex: none; width: 20px; height: 20px; border-radius: 50%;
+  border: 1px solid var(--line-strong); color: var(--muted); font-size: 11px; font-weight: 650;
+}
+.step[data-done="true"] .step-no { background: var(--ok); border-color: var(--ok); color: #08210f; font-size: 0; }
+.step[data-done="true"] .step-no::before { content: "✓"; font-size: 12px; }
+h2 { font-size: 14px; font-weight: 620; }
+.step-aside { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.step-sub { margin-bottom: 10px; color: var(--muted); font-size: 12.5px; }
+
+.link {
+  padding: 3px 0; border: 0; background: none; color: var(--muted); font-size: 12px;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.link:hover { color: var(--text); }
+
+/* Drop zones */
+.drop {
+  position: relative; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 18px 12px; border: 1px dashed var(--line-strong); border-radius: var(--radius);
+  background: var(--surface); color: var(--muted); text-align: center; cursor: pointer;
+  transition: border-color .12s, background .12s;
+}
+.drop > :not(input) { pointer-events: none; }
+.drop strong { color: var(--text); font-weight: 600; }
+.drop small { font-size: 12px; }
+.drop:hover { border-color: var(--muted); background: var(--surface-2); }
+.drop:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.step.over .drop { border-color: var(--accent); border-style: solid; background: #2a2416; }
+.step.over .target-card { border-color: var(--accent); background: #2a2416; }
+.drop.invalid { border-color: var(--danger); }
+.drop.compact { justify-content: center; aspect-ratio: 1; padding: 4px; font-size: 12px; line-height: 1.2; }
+.drop.compact small { display: none; }
+.field-msg { margin-top: 8px; color: var(--danger); font-size: 12.5px; overflow-wrap: anywhere; }
+
+.source-area.has-items { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.thumbs { display: contents; }
+.thumb { position: relative; aspect-ratio: 1; border-radius: var(--radius-sm); overflow: hidden; background: var(--canvas); }
+.thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.thumb button {
+  position: absolute; top: 3px; right: 3px; display: grid; place-items: center; width: 24px; height: 24px;
+  padding: 0; border: 0; border-radius: 50%; background: #000c; color: #fff; font-size: 15px; line-height: 1;
+  opacity: 0; transition: opacity .1s;
+}
+.thumb:hover button, .thumb button:focus-visible { opacity: 1; }
+@media (hover: none) {
+  .thumb button { opacity: 1; }
+  .primary kbd { display: none; }
+}
+
+.target-card {
+  display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; align-items: center;
+  padding: 8px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface);
+}
+.target-card img { display: block; width: 64px; height: 64px; object-fit: cover; border-radius: var(--radius-sm); background: var(--canvas); }
+.target-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.target-meta { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.target-actions { display: flex; gap: 12px; }
+
+/* Settings */
+.setting { margin-top: 14px; }
+.setting-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.setting label, .setting legend { font-weight: 520; }
+.setting output { color: var(--text); font-family: var(--mono); font-size: 12.5px; }
+.scale { display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 12px; }
+.hint { margin-top: 6px; color: var(--muted); font-size: 12.5px; }
+
+input[type=range] {
+  --fill: 0%;
+  width: 100%; height: 22px; margin: 0; background: none; cursor: pointer; appearance: none; -webkit-appearance: none;
+}
+input[type=range]::-webkit-slider-runnable-track {
+  height: 4px; border-radius: 2px;
+  background: linear-gradient(to right, var(--accent) var(--fill), var(--line-strong) var(--fill));
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 16px; height: 16px; margin-top: -6px; border-radius: 50%;
+  border: 2px solid var(--bg); background: var(--text); box-shadow: 0 0 0 1px var(--line-strong);
+}
+input[type=range]::-moz-range-track { height: 4px; border-radius: 2px; background: var(--line-strong); }
+input[type=range]::-moz-range-progress { height: 4px; border-radius: 2px; background: var(--accent); }
+input[type=range]::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--bg); background: var(--text); box-shadow: 0 0 0 1px var(--line-strong); }
+
+fieldset { margin: 14px 0 0; padding: 0; border: 0; }
+fieldset legend { padding: 0; margin-bottom: 6px; }
+.seg { display: inline-flex; padding: 2px; border-radius: var(--radius-sm); background: var(--surface-2); }
+.seg-full { display: flex; }
+.seg-full label { flex: 1; }
+.seg label { position: relative; display: block; cursor: pointer; font-weight: 500; }
+.seg label span, .seg button {
+  display: block; padding: 5px 11px; border: 0; border-radius: 5px; background: none;
+  color: var(--muted); font-size: 13px; text-align: center; white-space: nowrap;
+}
+.seg label:hover span, .seg button:hover { color: var(--text); }
+.seg input:checked + span, .seg button[aria-pressed="true"] { background: #3c3c3c; color: var(--text); }
+.seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.switch { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; align-items: center; cursor: pointer; }
+.switch-track { position: relative; width: 34px; height: 20px; border-radius: 10px; background: var(--line-strong); transition: background .12s; }
+.switch-track::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; transition: transform .12s;
+}
+.switch input:checked ~ .switch-track { background: var(--accent); }
+.switch input:checked ~ .switch-track::after { transform: translateX(14px); }
+.switch input:focus-visible ~ .switch-track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.switch input:disabled ~ .switch-track { opacity: .4; }
+.switch:has(input:disabled) { cursor: not-allowed; }
+.switch:has(input:disabled) .switch-title { color: var(--muted); }
+.switch-title { font-weight: 520; }
+.switch .hint { grid-column: 1 / -1; margin-top: 2px; }
+
+/* Privacy details */
+details { margin-top: 14px; color: var(--muted); font-size: 12.5px; }
+summary { cursor: pointer; font-weight: 520; }
+summary:hover { color: var(--text); }
+details ul { margin: 8px 0 0; padding-left: 16px; }
+details li + li { margin-top: 5px; }
+
+/* Primary action */
+.ready-hint { margin-bottom: 8px; color: var(--muted); font-size: 12.5px; }
+.primary {
+  display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 44px; padding: 9px 14px;
+  border: 0; border-radius: var(--radius); background: var(--accent); color: var(--on-accent); font-weight: 680;
+  transition: background .12s;
+}
+.primary:hover { background: var(--accent-hover); }
+.primary[data-running="true"] { background: var(--surface-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.primary[data-running="true"]:hover { background: #333; }
+.primary[data-running="true"] kbd { display: none; }
+.primary kbd { padding: 1px 5px; border-radius: 4px; background: #0000001f; font: 500 11px var(--mono); }
+.consent { margin-top: 8px; color: var(--muted); font-size: 12px; text-align: center; }
+
+/* Banner */
+.banner {
+  display: grid; gap: 4px; margin-top: 12px; padding: 10px 12px; border: 1px solid #5c322c;
+  border-radius: var(--radius); background: var(--danger-bg); font-size: 12.5px;
+}
+.banner strong { color: var(--danger); }
+.banner .link { justify-self: start; color: var(--text); }
+
+/* Stage */
+.stage { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--canvas); }
+.toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 12px;
+  border-bottom: 1px solid var(--line); background: var(--bg);
+}
+.zoom { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border-radius: var(--radius-sm); background: var(--surface-2); }
+.zoom button {
+  min-width: 28px; height: 28px; padding: 0 6px; border: 0; border-radius: 5px; background: none;
+  color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.zoom button:hover:not(:disabled) { background: #3c3c3c; color: var(--text); }
+.zoom button:disabled { opacity: .35; cursor: default; }
+#zoomFit { min-width: 42px; font-size: 12.5px; }
+.meta { flex: 1 1 180px; min-width: 0; color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.btn {
+  display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: var(--radius-sm);
+  background: var(--accent); color: var(--on-accent); font-size: 13px; font-weight: 650; text-decoration: none; white-space: nowrap;
+}
+.btn:hover { background: var(--accent-hover); }
+
+.alert {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 10px 14px;
+  border-bottom: 1px solid #5c322c; background: var(--danger-bg);
+}
+.alert[data-tone="info"] { border-color: var(--line); background: var(--surface); }
+.alert strong { display: block; color: var(--danger); }
+.alert[data-tone="info"] strong { color: var(--text); }
+.alert p { font-size: 13px; overflow-wrap: anywhere; }
+.alert button { flex: none; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 5px; background: none; color: var(--muted); font-size: 16px; }
+.alert button:hover { background: #ffffff14; color: var(--text); }
+
+.canvas { position: relative; flex: 1; min-height: 0; padding: 14px; }
+.canvas.over { outline: 2px dashed var(--accent); outline-offset: -8px; }
+.empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  height: 100%; color: var(--muted); text-align: center;
+}
+.empty svg { margin-bottom: 8px; color: var(--line-strong); }
+.empty strong { color: var(--text); font-size: 15px; font-weight: 600; }
+.empty p { max-width: 42ch; }
+.target-preview { display: flex; flex-direction: column; height: 100%; margin: 0; }
+.target-preview img { flex: 1; min-height: 0; width: 100%; object-fit: contain; }
+.target-preview figcaption { padding-top: 8px; color: var(--muted); font-size: 12.5px; text-align: center; }
+
+/* Viewer */
+.viewer { position: relative; width: 100%; height: 100%; touch-action: pan-y; user-select: none; -webkit-user-select: none; border-radius: 2px; }
+.viewer[data-zoomed="true"] { touch-action: none; }
+.viewer[data-view="slider"] { cursor: ew-resize; }
+.viewer[data-zoomed="true"] { cursor: grab; }
+.viewer.panning { cursor: grabbing; }
+.viewer[data-view="side"] { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.viewer[data-view="side"][data-vertical="true"] { flex-direction: column; }
+.frame { overflow: hidden; background: #000; }
+.viewer[data-view="slider"] .frame { position: absolute; }
+.viewer[data-view="side"] .frame { position: relative; flex: none; }
+.frame img { display: block; width: 100%; height: 100%; transform-origin: 0 0; pointer-events: none; -webkit-user-drag: none; }
+.tag {
+  position: absolute; top: 8px; padding: 2px 8px; border-radius: 5px; background: #000b; color: #fff;
+  font-size: 12px; font-weight: 550; pointer-events: none;
+}
+#frameBefore .tag { left: 8px; }
+#frameAfter .tag { right: 8px; }
+.viewer[data-view="side"] #frameAfter .tag { right: auto; left: 8px; }
+.divider { position: absolute; width: 2px; margin-left: -1px; background: #fff; box-shadow: 0 0 0 1px #0006; pointer-events: none; }
+.viewer[data-view="side"] .divider { display: none; }
+.grip {
+  position: absolute; top: 50%; left: 50%; display: grid; place-items: center; width: 34px; height: 34px;
+  transform: translate(-50%, -50%); border-radius: 50%; background: #fff; color: #111; box-shadow: 0 1px 6px #0008;
+}
+#split:focus-visible + .divider .grip { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+/* Busy */
+.busy { position: absolute; inset: 0; display: grid; place-items: center; background: #0d0d0db8; }
+.busy-card {
+  display: grid; justify-items: center; gap: 4px; max-width: 340px; padding: 18px 22px;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); text-align: center;
+}
+.busy-card p { color: var(--muted); font-size: 12.5px; }
+.busy-title { font-weight: 620; }
+.busy-time { font-family: var(--mono); font-size: 13px; }
+.spinner {
+  width: 22px; height: 22px; margin-bottom: 6px; border: 2px solid var(--line-strong); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin .9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Session history */
+.film { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--line); background: var(--bg); }
+.film-label { flex: none; color: var(--muted); font-size: 12px; }
+.film-row { display: flex; gap: 6px; min-width: 0; overflow-x: auto; padding: 3px; }
+.film-item {
+  position: relative; flex: none; width: 52px; height: 52px; padding: 0; overflow: hidden; border: 0;
+  border-radius: var(--radius-sm); background: #000; box-shadow: 0 0 0 1px var(--line);
+}
+.film-item img { display: block; width: 100%; height: 100%; object-fit: cover; opacity: .72; }
+.film-item:hover img, .film-item[aria-current="true"] img { opacity: 1; }
+.film-item[aria-current="true"] { box-shadow: 0 0 0 2px var(--accent); }
+.film-item span {
+  position: absolute; left: 3px; bottom: 3px; padding: 0 4px; border-radius: 3px; background: #000c; color: #fff;
+  font: 500 10.5px/1.5 var(--mono);
+}
+
+/* Narrow screens: rail above stage, page scrolls, action stays reachable. */
+@media (max-width: 959px) {
+  body { display: block; height: auto; }
+  .app { display: block; }
+  .rail { border-right: 0; }
+  .rail-scroll { overflow: visible; padding-right: 16px; scrollbar-gutter: auto; }
+  .rail-foot { position: sticky; bottom: 0; z-index: 5; }
+  .stage { border-top: 1px solid var(--line); }
+  .canvas { flex: none; height: 72dvh; min-height: 340px; padding: 8px; }
+  .meta { order: 5; flex-basis: 100%; }
+}
+@media (max-width: 480px) {
+  .topbar { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .chips { justify-content: flex-start; }
+  .film-label { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; }
+  .spinner { animation-duration: 3s; }
+}
 </style>
 </head>
-<body><main>
-<header><h1>Local Face Compositor</h1><p>Local face swapping with mask refinement, controlled color matching and two blending modes.</p></header>
-<div class="layout">
-<section class="panel">
-<h2>1. Upload images</h2>
-<form id="form">
-<div class="field"><label for="sources">Source face images<span class="hint">Upload up to 12 references. The clearest/largest detected face will be used for the swap.</span></label><input id="sources" name="sources" type="file" accept="image/jpeg,image/png,image/webp" multiple required><div id="sourcePreview" class="preview-grid"><div class="empty">Source previews appear here.</div></div></div>
-<div class="field"><label for="target">Target image<span class="hint">Pose, clothes, body and background are taken from this image.</span></label><input id="target" name="target" type="file" accept="image/jpeg,image/png,image/webp" required><div id="targetPreview" class="preview"><div class="empty">Target preview appears here.</div></div></div>
-<div class="settings"><h2>Processing settings</h2>
-<div class="setting"><div class="setting-top"><label for="color">Color / lighting match</label><output id="colorValue">35%</output></div><input id="color" type="range" min="0" max="80" value="35" step="5"><span class="hint">Higher values adapt the swapped face more strongly to the target photo's lighting and color. Too much may change skin tone.</span></div>
-<div class="setting"><div class="setting-top"><label for="blend">Blend strength</label><output id="blendValue">95%</output></div><input id="blend" type="range" min="10" max="100" value="95" step="5"><span class="hint">Lower values mix more of the original target face back in.</span></div>
-<div class="setting"><label for="blendMode">Blending method</label><select id="blendMode"><option value="feather">Soft feather mask (recommended)</option><option value="seamless">OpenCV seamless clone</option></select><span class="hint">Seamless clone can help with edges but may produce different color results; the app falls back to feather blending if it fails.</span></div>
-<div class="setting"><label class="check"><input id="restore" type="checkbox"><div>Optional face restoration<span>GFPGAN can enhance details, but may change identity features. Requires separately installed GFPGAN and models/GFPGANv1.4.pth.</span></div></label></div>
-</div>
-<button id="submit" type="submit">Create composite</button><div id="status" class="status" role="status">Ready. Add the required face-swap model before processing.</div>
-</form>
-<div class="notice">The app does not call external AI APIs. It may download InsightFace's face-analysis pack at first startup unless you prepare it locally. For fully offline use, install all model assets in advance. Use only photos you have permission to edit.</div>
-</section>
-<section class="panel"><h2>2. Before / after preview</h2><p>Compare the original target with the composite before downloading it.</p><div id="result" class="result"><div class="preview"><div class="empty">The result will appear here after processing.</div></div></div><div class="status-line">Outputs are saved in <code>data/outputs/</code>; delete them there when no longer needed.</div></section>
-</div></main>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3v18"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></svg>
+    <h1>Local Face Compositor</h1>
+  </div>
+  <div class="chips" id="chips" role="group" aria-label="System status"></div>
+</header>
+
+<main class="app">
+  <form class="rail" id="form" novalidate>
+    <div class="rail-scroll">
+      <div class="banner" id="banner" role="alert" hidden>
+        <strong id="bannerTitle"></strong>
+        <span id="bannerBody"></span>
+        <button type="button" class="link" id="recheck">Check again</button>
+      </div>
+
+      <section class="step" id="stepSources" aria-labelledby="sourcesHeading">
+        <div class="step-head">
+          <span class="step-no" aria-hidden="true">1</span>
+          <h2 id="sourcesHeading">Source face</h2>
+          <span class="step-aside" id="sourceCount">0 of 12</span>
+        </div>
+        <p class="step-sub">The face to use. From several photos, one best-detected face is picked; they aren't blended.</p>
+        <div class="source-area" id="sourceArea">
+        <ul class="thumbs" id="sourceGrid" hidden></ul>
+        <label class="drop" id="sourceDrop">
+          <input class="vh" id="sources" type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" multiple aria-describedby="sourceMsg">
+          <span id="sourceDropText"><strong>Drop photos</strong> or click to browse</span>
+          <small>JPG, PNG or WebP, up to 25 MB each</small>
+        </label>
+        </div>
+        <p class="field-msg" id="sourceMsg" role="alert" hidden></p>
+      </section>
+
+      <section class="step" id="stepTarget" aria-labelledby="targetHeading">
+        <div class="step-head">
+          <span class="step-no" aria-hidden="true">2</span>
+          <h2 id="targetHeading">Target photo</h2>
+        </div>
+        <p class="step-sub">Only the largest face is replaced. The rest stays as is.</p>
+        <label class="drop" id="targetDrop">
+          <input class="vh" id="target" type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" aria-describedby="targetMsg">
+          <span><strong>Drop a photo</strong> or click to browse</span>
+          <small>JPG, PNG or WebP, up to 25 MB</small>
+        </label>
+        <div class="target-card" id="targetCard" hidden>
+          <img id="targetThumb" alt="">
+          <div>
+            <div class="target-name" id="targetName"></div>
+            <div class="target-meta" id="targetMeta"></div>
+            <div class="target-actions">
+              <button type="button" class="link" id="targetReplace">Replace</button>
+              <button type="button" class="link" id="targetRemove">Remove</button>
+            </div>
+          </div>
+        </div>
+        <p class="field-msg" id="targetMsg" role="alert" hidden></p>
+      </section>
+
+      <section class="step" aria-labelledby="adjustHeading">
+        <div class="step-head">
+          <span class="step-no" aria-hidden="true">3</span>
+          <h2 id="adjustHeading">Adjust</h2>
+          <button type="button" class="link step-aside" id="resetSettings" hidden>Reset to defaults</button>
+        </div>
+
+        <div class="setting">
+          <div class="setting-top"><label for="color">Color / lighting match</label><output id="colorValue" for="color">35%</output></div>
+          <input id="color" type="range" min="0" max="80" step="5" value="35">
+          <div class="scale" aria-hidden="true"><span>Keep source tone</span><span>Match target photo</span></div>
+        </div>
+
+        <div class="setting">
+          <div class="setting-top"><label for="blend">Blend strength</label><output id="blendValue" for="blend">95%</output></div>
+          <input id="blend" type="range" min="10" max="100" step="5" value="95">
+          <div class="scale" aria-hidden="true"><span>More original face</span><span>More swapped face</span></div>
+        </div>
+
+        <fieldset>
+          <legend>Blending method</legend>
+          <div class="seg seg-full">
+            <label><input class="vh" type="radio" name="blendMode" value="feather" checked><span>Soft feather</span></label>
+            <label><input class="vh" type="radio" name="blendMode" value="seamless"><span>Seamless clone</span></label>
+          </div>
+          <p class="hint" id="blendHint"></p>
+        </fieldset>
+
+        <div class="setting">
+          <label class="switch">
+            <span class="switch-title">Optional face restoration</span>
+            <input class="vh" id="restore" type="checkbox" aria-describedby="restoreHint">
+            <span class="switch-track" aria-hidden="true"></span>
+            <span class="hint" id="restoreHint"></span>
+          </label>
+        </div>
+      </section>
+
+      <details>
+        <summary>Privacy and data</summary>
+        <ul>
+          <li>Images are processed on this machine. The app doesn't call external AI APIs.</li>
+          <li>InsightFace may download its face-analysis pack at first startup unless it's already installed. For fully offline use, install all model assets in advance.</li>
+          <li>Uploads are deleted after each run. Results stay in <code>data/outputs/</code> until you delete them.</li>
+          <li>Don't use this app to impersonate or defraud anyone, or to create non-consensual intimate imagery.</li>
+        </ul>
+      </details>
+    </div>
+
+    <div class="rail-foot">
+      <p class="ready-hint" id="readyHint" aria-live="polite"></p>
+      <button class="primary" id="submit" type="submit"><span id="submitLabel">Create composite</span><kbd id="submitKey">Ctrl+Enter</kbd></button>
+      <p class="consent">Only use photos you have permission to edit.</p>
+    </div>
+  </form>
+
+  <section class="stage" id="stage" aria-label="Preview">
+    <div class="toolbar" id="toolbar" hidden>
+      <div class="seg" role="group" aria-label="Comparison view">
+        <button type="button" data-view="slider" aria-pressed="true">Slider</button>
+        <button type="button" data-view="side" aria-pressed="false">Side by side</button>
+      </div>
+      <div class="zoom" role="group" aria-label="Zoom">
+        <button type="button" id="zoomOut" aria-label="Zoom out">−</button>
+        <button type="button" id="zoomFit" aria-label="Reset zoom" title="Reset zoom (0)">1×</button>
+        <button type="button" id="zoomIn" aria-label="Zoom in">+</button>
+      </div>
+      <p class="meta" id="meta"></p>
+      <a class="btn" id="download" download>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v13M6 11l6 6 6-6M4 21h16"/></svg>
+        Download PNG
+      </a>
+    </div>
+
+    <div class="alert" id="alert" role="alert" hidden>
+      <div><strong id="alertTitle"></strong><p id="alertBody"></p></div>
+      <button type="button" id="alertClose" aria-label="Dismiss">×</button>
+    </div>
+
+    <div class="canvas" id="canvas">
+      <div class="empty" id="empty">
+        <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/><circle cx="7.5" cy="10" r="1.6"/><path d="m3 17 4-3 3 2.4"/></svg>
+        <strong>Your composite will appear here</strong>
+        <p>Add a source face and a target photo, then create a composite. You can drag a slider across it to compare it with the original.</p>
+      </div>
+
+      <figure class="target-preview" id="targetPreview" hidden>
+        <img id="targetLarge" alt="Selected target photo">
+        <figcaption>Target photo. No composite yet.</figcaption>
+      </figure>
+
+      <div class="viewer" id="viewer" data-view="slider" tabindex="0" role="group"
+           aria-label="Comparison of the original and the composite. Press plus or minus to zoom, 0 to reset, arrow keys to pan when zoomed." hidden>
+        <div class="frame" id="frameBefore"><img id="imgBefore" alt="Original target photo" draggable="false"><span class="tag">Original</span></div>
+        <div class="frame" id="frameAfter"><img id="imgAfter" alt="Composite result" draggable="false"><span class="tag">Composite</span></div>
+        <input class="vh" id="split" type="range" min="0" max="100" value="50" aria-label="Comparison divider position">
+        <div class="divider" id="divider">
+          <span class="grip" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 7-5 5 5 5M15 7l5 5-5 5"/></svg></span>
+        </div>
+      </div>
+
+      <div class="busy" id="busy" hidden>
+        <div class="busy-card">
+          <span class="spinner" aria-hidden="true"></span>
+          <span class="busy-title">Creating composite…</span>
+          <span class="busy-time" id="busyTime" role="timer">0:00</span>
+          <p id="busyNote"></p>
+        </div>
+      </div>
+    </div>
+
+    <div class="film" id="film" hidden>
+      <span class="film-label">This session</span>
+      <div class="film-row" id="filmRow"></div>
+    </div>
+  </section>
+</main>
+<div class="vh" id="live" aria-live="polite"></div>
+
 <script>
-const $=id=>document.getElementById(id);let targetPreviewUrl=null;let sourcePreviewUrls=[];
-function setImage(container,file,alt){container.replaceChildren();if(!file){container.innerHTML='<div class="empty">No image selected.</div>';return null;}const url=URL.createObjectURL(file);const img=document.createElement('img');img.alt=alt;img.src=url;container.appendChild(img);return url;}
-$('sources').addEventListener('change',()=>{sourcePreviewUrls.forEach(URL.revokeObjectURL);sourcePreviewUrls=[];const files=[...$('sources').files].slice(0,12);$('sourcePreview').replaceChildren();if(!files.length){$('sourcePreview').innerHTML='<div class="empty">Source previews appear here.</div>';return;}files.forEach(file=>{const box=document.createElement('div');box.className='preview';const url=setImage(box,file,file.name);if(url)sourcePreviewUrls.push(url);$('sourcePreview').appendChild(box);});if($('sources').files.length>12)$('status').textContent='Only the first 12 source images will be used.';});
-$('target').addEventListener('change',()=>{if(targetPreviewUrl)URL.revokeObjectURL(targetPreviewUrl);targetPreviewUrl=setImage($('targetPreview'),$('target').files[0],'Original target image');});
-$('color').addEventListener('input',()=> $('colorValue').value=$('color').value+'%');$('blend').addEventListener('input',()=> $('blendValue').value=$('blend').value+'%');
-$('form').addEventListener('submit',async event=>{event.preventDefault();const files=[...$('sources').files].slice(0,12);const target=$('target').files[0];if(!files.length||!target){$('status').textContent='Choose at least one source image and one target image.';return;}const data=new FormData();files.forEach(file=>data.append('sources',file));data.append('target',target);data.append('color_match_strength',String(Number($('color').value)/100));data.append('blend_strength',String(Number($('blend').value)/100));data.append('blend_mode',$('blendMode').value);data.append('restore_face',String($('restore').checked));$('submit').disabled=true;$('submit').textContent='Processing…';$('status').className='status';$('status').textContent='Processing locally. The first run can take longer while the face-analysis model initializes.';$('result').innerHTML='<div class="preview"><div class="empty">Processing…</div></div>';try{const response=await fetch('/api/composite',{method:'POST',body:data});const payload=await response.json();if(!response.ok)throw new Error(payload.detail||'Processing failed.');const wrapper=document.createElement('div');wrapper.className='compare';const originalFigure=document.createElement('figure');const originalCaption=document.createElement('figcaption');originalCaption.textContent='Original target';const original=document.createElement('img');original.src=targetPreviewUrl;original.alt='Original target';originalFigure.append(originalCaption,original);const outputFigure=document.createElement('figure');const outputCaption=document.createElement('figcaption');outputCaption.textContent='Composited output';const output=document.createElement('img');output.src=payload.output_url+'?t='+Date.now();output.alt='Composited output';outputFigure.append(outputCaption,output);wrapper.append(originalFigure,outputFigure);const link=document.createElement('a');link.className='download';link.href=payload.output_url;link.download='face-composite.png';link.textContent='Download PNG';$('result').replaceChildren(wrapper,link);$('status').textContent=payload.message||'Completed.';}catch(error){$('result').innerHTML='<div class="preview"><div class="empty">No output created.</div></div>';$('status').className='status error';$('status').textContent=error.message||String(error);}finally{$('submit').disabled=false;$('submit').textContent='Create composite';}});
-</script></body></html>
+const $ = id => document.getElementById(id);
+
+const MAX_SOURCES = 12;
+const MAX_BYTES = 25 * 1024 * 1024;
+const MAX_HISTORY = 12;
+const MAX_ZOOM = 8;
+const ALLOWED_NAME = /\.(jpe?g|png|webp)$/i;
+const DEFAULTS = { color: 35, blend: 95, blendMode: 'feather', restore: false };
+const STORE_KEY = 'local-face-compositor';
+const BASE_TITLE = document.title;
+const BLEND_HINTS = {
+  feather: 'Fades the edge of the face gradually. The best place to start.',
+  seamless: 'Can hide hard edges, but may shift color. Falls back to soft feather if it fails.',
+};
+const BLEND_NAMES = { feather: 'Soft feather', seamless: 'Seamless clone' };
+
+const state = {
+  sources: [],            // { file, url, key }
+  target: null,           // { file, url, key }
+  health: null,
+  offline: false,
+  running: false,
+  controller: null,
+  history: [],            // { id, before, after, settings, seconds, device, sig, width, height }
+  current: null,
+  nextRun: 1,
+  view: 'slider',
+  split: 50,
+  zoom: 1,
+  panX: 0,                // pan as a fraction of the frame, so it survives resizes
+  panY: 0,
+  frameW: 0,
+  frameH: 0,
+  imageW: 0,
+  imageH: 0,
+};
+
+/* ---------- Helpers ---------- */
+
+const fileKey = file => `${file.name}:${file.size}:${file.lastModified}`;
+
+function formatBytes(bytes) {
+  return bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+function formatClock(seconds) {
+  const whole = Math.floor(seconds);
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+}
+function fileProblem(file) {
+  if (!ALLOWED_NAME.test(file.name)) return `${file.name}: use a JPG, PNG or WebP image.`;
+  if (file.size > MAX_BYTES) return `${file.name}: larger than the 25 MB limit.`;
+  if (!file.size) return `${file.name}: the file is empty.`;
+  return null;
+}
+function setMessage(el, text) {
+  el.textContent = text || '';
+  el.hidden = !text;
+}
+function announce(text) {
+  $('live').textContent = text;
+}
+
+/* ---------- Settings ---------- */
+
+function getSettings() {
+  return {
+    color: Number($('color').value),
+    blend: Number($('blend').value),
+    blendMode: document.querySelector('input[name=blendMode]:checked').value,
+    restore: $('restore').checked,
+  };
+}
+function applySettings(values) {
+  $('color').value = values.color;
+  $('blend').value = values.blend;
+  const radio = document.querySelector(`input[name=blendMode][value="${values.blendMode}"]`);
+  if (radio) radio.checked = true;
+  $('restore').checked = Boolean(values.restore) && !$('restore').disabled;
+}
+function loadStored() {
+  try {
+    return JSON.parse(localStorage.getItem(STORE_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+function saveStored() {
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify({ ...getSettings(), view: state.view }));
+  } catch { /* Storage may be unavailable; settings just won't persist. */ }
+}
+function fillRange(input) {
+  const pct = (input.value - input.min) / (input.max - input.min) * 100;
+  input.style.setProperty('--fill', `${pct}%`);
+}
+function renderSettings() {
+  const settings = getSettings();
+  $('colorValue').value = `${settings.color}%`;
+  $('blendValue').value = `${settings.blend}%`;
+  fillRange($('color'));
+  fillRange($('blend'));
+  $('blendHint').textContent = BLEND_HINTS[settings.blendMode];
+  $('resetSettings').hidden = ['color', 'blend', 'blendMode', 'restore'].every(k => settings[k] === DEFAULTS[k]);
+  renderReady();
+}
+function onSettingsChange() {
+  renderSettings();
+  saveStored();
+}
+
+/* ---------- Input photos ---------- */
+
+function addSources(files) {
+  const problems = [];
+  let overflow = 0;
+  for (const file of files) {
+    const problem = fileProblem(file);
+    const key = fileKey(file);
+    if (problem) problems.push(problem);
+    else if (state.sources.some(s => s.key === key)) continue;
+    else if (state.sources.length >= MAX_SOURCES) overflow++;
+    else state.sources.push({ file, key, url: URL.createObjectURL(file) });
+  }
+  if (overflow) problems.push(`${overflow} ${overflow === 1 ? 'photo' : 'photos'} left out: the limit is ${MAX_SOURCES}.`);
+  setMessage($('sourceMsg'), problems.join(' '));
+  renderSources();
+}
+function removeSource(key) {
+  const item = state.sources.find(s => s.key === key);
+  if (!item) return;
+  URL.revokeObjectURL(item.url);
+  state.sources = state.sources.filter(s => s !== item);
+  setMessage($('sourceMsg'), '');
+  renderSources();
+  $('sources').focus();
+}
+function renderSources() {
+  const grid = $('sourceGrid');
+  grid.replaceChildren(...state.sources.map(item => {
+    const li = document.createElement('li');
+    li.className = 'thumb';
+    const img = document.createElement('img');
+    img.src = item.url;
+    img.alt = item.file.name;
+    img.title = item.file.name;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '×';
+    remove.setAttribute('aria-label', `Remove ${item.file.name}`);
+    remove.addEventListener('click', () => removeSource(item.key));
+    li.append(img, remove);
+    return li;
+  }));
+  const count = state.sources.length;
+  grid.hidden = !count;
+  $('sourceCount').textContent = `${count} of ${MAX_SOURCES}`;
+  $('stepSources').dataset.done = String(count > 0);
+  $('sourceArea').classList.toggle('has-items', count > 0);
+  $('sourceDrop').classList.toggle('compact', count > 0);
+  $('sourceDrop').classList.remove('invalid');
+  $('sourceDropText').innerHTML = count ? '<strong>Add more</strong>' : '<strong>Drop photos</strong> or click to browse';
+  $('sourceDrop').hidden = count >= MAX_SOURCES;
+  renderReady();
+}
+function setTarget(file) {
+  const problem = file && fileProblem(file);
+  if (problem) {
+    setMessage($('targetMsg'), problem);
+    return;
+  }
+  setMessage($('targetMsg'), '');
+  if (state.target) URL.revokeObjectURL(state.target.url);
+  state.target = file ? { file, key: fileKey(file), url: URL.createObjectURL(file) } : null;
+  renderTarget();
+}
+function renderTarget() {
+  const target = state.target;
+  $('targetDrop').hidden = Boolean(target);
+  $('targetDrop').classList.remove('invalid');
+  $('targetCard').hidden = !target;
+  $('stepTarget').dataset.done = String(Boolean(target));
+  if (target) {
+    $('targetThumb').src = target.url;
+    $('targetLarge').src = target.url;
+    $('targetName').textContent = target.file.name;
+    $('targetName').title = target.file.name;
+    $('targetMeta').textContent = formatBytes(target.file.size);
+    $('targetThumb').onload = () => {
+      const img = $('targetThumb');
+      $('targetMeta').textContent = `${img.naturalWidth} × ${img.naturalHeight} px, ${formatBytes(target.file.size)}`;
+    };
+  }
+  renderStage();
+  renderReady();
+}
+
+function wireDrop(el, onFiles) {
+  ['dragenter', 'dragover'].forEach(type => el.addEventListener(type, event => {
+    event.preventDefault();
+    el.classList.add('over');
+  }));
+  el.addEventListener('dragleave', event => {
+    if (!el.contains(event.relatedTarget)) el.classList.remove('over');
+  });
+  el.addEventListener('drop', event => {
+    event.preventDefault();
+    el.classList.remove('over');
+    onFiles([...event.dataTransfer.files]);
+  });
+}
+
+/* ---------- Health ---------- */
+
+async function checkHealth() {
+  // The server blocks while compositing, so a check during a run would only report a false outage.
+  if (state.running) return;
+  try {
+    const response = await fetch('/api/health', { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+    if (!response.ok) throw new Error(String(response.status));
+    state.health = await response.json();
+    state.offline = false;
+  } catch {
+    state.offline = true;
+  }
+  renderHealth();
+}
+function deviceName() {
+  if (!state.health) return null;
+  return (state.health.onnx_providers || []).includes('CUDAExecutionProvider') ? 'CUDA GPU' : 'CPU';
+}
+function swapModelMissing() {
+  return Boolean(state.health) && !state.offline && !state.health.swap_model_present;
+}
+function renderHealth() {
+  const chip = (text, tone) => {
+    const el = document.createElement('span');
+    el.className = 'chip';
+    el.dataset.tone = tone;
+    el.textContent = text;
+    return el;
+  };
+  const chips = [];
+  if (state.offline) {
+    chips.push(chip('Server not responding', 'bad'));
+  } else if (state.health) {
+    chips.push(chip(state.health.swap_model_present ? 'Swap model ready' : 'Swap model missing', state.health.swap_model_present ? 'ok' : 'bad'));
+    chips.push(chip(`Runs on ${deviceName()}`, 'neutral'));
+  }
+  $('chips').replaceChildren(...chips);
+
+  if (state.offline) {
+    $('bannerTitle').textContent = "Can't reach the local server";
+    $('bannerBody').innerHTML = 'Start it with <code>uvicorn app:app --host 127.0.0.1 --port 8000</code>.';
+    $('banner').hidden = false;
+  } else if (swapModelMissing()) {
+    $('bannerTitle').textContent = 'Face-swap model not found';
+    $('bannerBody').innerHTML = 'Add a model you are licensed to use at <code>models/inswapper_128.onnx</code>. Weights are not bundled.';
+    $('banner').hidden = false;
+  } else {
+    $('banner').hidden = true;
+  }
+
+  const restoreAvailable = !state.health || state.health.restoration_model_present;
+  const restore = $('restore');
+  restore.disabled = !restoreAvailable;
+  if (!restoreAvailable) restore.checked = false;
+  $('restoreHint').innerHTML = restoreAvailable
+    ? 'GFPGAN can sharpen details, but may change identity features. Also needs the GFPGAN package installed.'
+    : 'Unavailable: add <code>models/GFPGANv1.4.pth</code> to turn this on.';
+  renderSettings();
+}
+
+/* ---------- Ready state ---------- */
+
+function signature() {
+  return JSON.stringify([state.sources.map(s => s.key), state.target && state.target.key, getSettings()]);
+}
+function renderReady() {
+  const hint = $('readyHint');
+  if (state.running) {
+    hint.textContent = 'Working on this machine. You can keep adjusting for the next run.';
+  } else if (swapModelMissing()) {
+    hint.textContent = 'Add the face-swap model to continue.';
+  } else if (!state.sources.length && !state.target) {
+    hint.textContent = 'Add a source face and a target photo to start.';
+  } else if (!state.sources.length) {
+    hint.textContent = 'Add a source face to continue.';
+  } else if (!state.target) {
+    hint.textContent = 'Add a target photo to continue.';
+  } else if (state.current && state.current.sig !== signature()) {
+    hint.textContent = 'Photos or settings have changed since the result shown. Create a new one to compare.';
+  } else if (state.current) {
+    hint.textContent = 'The result shown uses these photos and settings.';
+  } else {
+    hint.textContent = 'Ready to create a composite.';
+  }
+}
+
+/* ---------- Running ---------- */
+
+let timer = null;
+
+function setRunning(running) {
+  state.running = running;
+  $('submit').dataset.running = String(running);
+  $('submitLabel').textContent = running ? 'Cancel' : 'Create composite';
+  $('busy').hidden = !running;
+  $('stage').setAttribute('aria-busy', String(running));
+  clearInterval(timer);
+  if (running) {
+    const started = performance.now();
+    const device = deviceName();
+    const base = `${device ? `Running on ${device}. ` : ''}The first run takes longer while the models load.`;
+    $('busyNote').textContent = base;
+    $('busyTime').textContent = '0:00';
+    document.title = `Working… – ${BASE_TITLE}`;
+    timer = setInterval(() => {
+      const seconds = (performance.now() - started) / 1000;
+      $('busyTime').textContent = formatClock(seconds);
+      if (seconds > 45) $('busyNote').textContent = 'Still working. Large photos, CPU runs and face restoration can take a while.';
+    }, 500);
+  }
+  renderReady();
+}
+function showAlert(title, body, tone = 'error') {
+  $('alertTitle').textContent = title;
+  $('alertBody').textContent = body;
+  $('alert').dataset.tone = tone;
+  $('alert').hidden = false;
+}
+function hideAlert() {
+  $('alert').hidden = true;
+}
+function errorTitle(message) {
+  if (/No face detected in target/i.test(message)) return 'No face found in the target photo';
+  if (/No face detected in source/i.test(message)) return 'No face found in the source photos';
+  if (/GFPGAN/i.test(message)) return 'Face restoration failed';
+  if (/Missing models|Could not initialize/i.test(message)) return 'The models could not be loaded';
+  return "Couldn't create the composite";
+}
+async function readError(response) {
+  try {
+    const payload = await response.json();
+    if (typeof payload.detail === 'string') return payload.detail;
+    if (Array.isArray(payload.detail)) return payload.detail.map(item => item.msg).join(' ');
+  } catch { /* A non-JSON error body falls through to the generic message. */ }
+  return `The server returned an error (${response.status}). Check its terminal output for details.`;
+}
+function validate() {
+  let first = null;
+  if (!state.sources.length) {
+    setMessage($('sourceMsg'), 'Add at least one source photo.');
+    $('sourceDrop').classList.add('invalid');
+    first = $('sources');
+  }
+  if (!state.target) {
+    setMessage($('targetMsg'), 'Add a target photo.');
+    $('targetDrop').classList.add('invalid');
+    first = first || $('target');
+  }
+  if (first) first.focus();
+  return !first;
+}
+async function run() {
+  if (swapModelMissing()) {
+    $('recheck').focus();
+    return;
+  }
+  if (!validate()) return;
+
+  const settings = getSettings();
+  const sig = signature();
+  const data = new FormData();
+  state.sources.forEach(item => data.append('sources', item.file));
+  data.append('target', state.target.file);
+  data.append('color_match_strength', String(settings.color / 100));
+  data.append('blend_strength', String(settings.blend / 100));
+  data.append('blend_mode', settings.blendMode);
+  data.append('restore_face', String(settings.restore));
+  const targetFile = state.target.file;
+
+  hideAlert();
+  state.controller = new AbortController();
+  setRunning(true);
+  announce('Creating composite.');
+  scrollStageIntoView();
+  const started = performance.now();
+  let payload;
+  try {
+    const response = await fetch('/api/composite', { method: 'POST', body: data, signal: state.controller.signal });
+    if (!response.ok) throw new Error(await readError(response));
+    payload = await response.json();
+  } catch (error) {
+    document.title = BASE_TITLE;
+    if (error.name === 'AbortError') {
+      showAlert('Cancelled', 'The page stopped waiting. The server may still finish this run and save it to data/outputs/.', 'info');
+      announce('Cancelled.');
+    } else if (error instanceof TypeError) {
+      showAlert("Can't reach the local server", 'Check that it is still running, then try again. Your photos and settings are still here.');
+    } else {
+      showAlert(errorTitle(error.message), error.message);
+    }
+    return;
+  } finally {
+    state.controller = null;
+    setRunning(false);
+    // After a failure the cause may be a changed model file or a stopped server.
+    if (!payload) checkHealth();
+  }
+
+  const entry = {
+    id: state.nextRun++,
+    before: URL.createObjectURL(targetFile),
+    after: payload.output_url,
+    settings,
+    seconds: (performance.now() - started) / 1000,
+    device: payload.device,
+    sig,
+  };
+  state.history.push(entry);
+  if (state.history.length > MAX_HISTORY) URL.revokeObjectURL(state.history.shift().before);
+  await showEntry(entry);
+  announce(payload.message || 'Composite ready.');
+  document.title = document.hidden ? `Ready – ${BASE_TITLE}` : BASE_TITLE;
+}
+function scrollStageIntoView() {
+  if (matchMedia('(max-width: 959px)').matches) $('stage').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/* ---------- Stage ---------- */
+
+function renderStage() {
+  const hasResult = Boolean(state.current);
+  $('viewer').hidden = !hasResult;
+  $('toolbar').hidden = !hasResult;
+  $('targetPreview').hidden = hasResult || !state.target;
+  $('empty').hidden = hasResult || Boolean(state.target);
+  $('film').hidden = state.history.length < 2;
+}
+function renderFilm() {
+  $('filmRow').replaceChildren(...state.history.map(entry => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'film-item';
+    button.setAttribute('aria-label', `Run ${entry.id}: ${describeSettings(entry.settings)}`);
+    button.title = describeSettings(entry.settings);
+    if (entry === state.current) button.setAttribute('aria-current', 'true');
+    const img = document.createElement('img');
+    img.src = entry.after;
+    img.alt = '';
+    const label = document.createElement('span');
+    label.textContent = entry.id;
+    button.append(img, label);
+    button.addEventListener('click', () => showEntry(entry));
+    return button;
+  }));
+  const active = $('filmRow').querySelector('[aria-current]');
+  if (active) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+function describeSettings(settings) {
+  const parts = [BLEND_NAMES[settings.blendMode], `color ${settings.color}%`, `blend ${settings.blend}%`];
+  if (settings.restore) parts.push('restored');
+  return parts.join(', ');
+}
+async function showEntry(entry) {
+  state.current = entry;
+  $('imgBefore').src = entry.before;
+  $('imgAfter').src = entry.after;
+  $('meta').textContent = `Run ${entry.id}: ${describeSettings(entry.settings)}, ${entry.seconds.toFixed(1)} s on ${entry.device}`;
+  $('download').href = entry.after;
+  $('download').download = `composite-run${entry.id}-${entry.settings.blendMode}-c${entry.settings.color}-b${entry.settings.blend}.png`;
+  renderStage();
+  renderFilm();
+  renderReady();
+  try {
+    await $('imgAfter').decode();
+  } catch {
+    if (state.current === entry) showAlert('Result image not found', 'It may have been deleted from data/outputs/.');
+    return;
+  }
+  if (state.current !== entry) return;
+  const width = $('imgAfter').naturalWidth;
+  const height = $('imgAfter').naturalHeight;
+  // Keep zoom and position between runs of the same photo so the same area can be compared.
+  if (state.imageW !== width || state.imageH !== height) resetZoom();
+  state.imageW = width;
+  state.imageH = height;
+  layoutViewer();
+}
+
+/* ---------- Viewer: layout ---------- */
+
+function layoutViewer() {
+  const viewer = $('viewer');
+  if (viewer.hidden || !state.imageW) return;
+  const box = viewer.getBoundingClientRect();
+  if (!box.width || !box.height) return;
+  const side = state.view === 'side';
+  const vertical = side && box.width < 560;
+  const gap = side ? 8 : 0;
+  const areaW = side && !vertical ? (box.width - gap) / 2 : box.width;
+  const areaH = vertical ? (box.height - gap) / 2 : box.height;
+  const scale = Math.min(areaW / state.imageW, areaH / state.imageH);
+  state.frameW = Math.max(1, Math.round(state.imageW * scale));
+  state.frameH = Math.max(1, Math.round(state.imageH * scale));
+
+  viewer.dataset.view = state.view;
+  viewer.dataset.vertical = String(vertical);
+  const left = side ? '' : `${Math.round((box.width - state.frameW) / 2)}px`;
+  const top = side ? '' : `${Math.round((box.height - state.frameH) / 2)}px`;
+  for (const frame of [$('frameBefore'), $('frameAfter')]) {
+    frame.style.width = `${state.frameW}px`;
+    frame.style.height = `${state.frameH}px`;
+    frame.style.left = left;
+    frame.style.top = top;
+  }
+  $('split').hidden = side;
+  $('divider').style.top = top;
+  $('divider').style.height = `${state.frameH}px`;
+  document.querySelectorAll('button[data-view]').forEach(button => {
+    button.setAttribute('aria-pressed', String(button.dataset.view === state.view));
+  });
+  applySplit();
+  applyTransform();
+}
+function applySplit() {
+  const side = state.view === 'side';
+  $('frameAfter').style.clipPath = side ? 'none' : `inset(0 0 0 ${state.split}%)`;
+  if (side) return;
+  const frameLeft = parseFloat($('frameAfter').style.left) || 0;
+  $('divider').style.left = `${frameLeft + state.frameW * state.split / 100}px`;
+  $('split').value = Math.round(state.split);
+}
+function clampPan() {
+  const min = 1 - state.zoom;
+  state.panX = Math.min(0, Math.max(min, state.panX));
+  state.panY = Math.min(0, Math.max(min, state.panY));
+}
+function applyTransform() {
+  clampPan();
+  const transform = `translate(${state.panX * state.frameW}px, ${state.panY * state.frameH}px) scale(${state.zoom})`;
+  $('imgBefore').style.transform = transform;
+  $('imgAfter').style.transform = transform;
+  $('viewer').dataset.zoomed = String(state.zoom > 1);
+  $('zoomFit').textContent = `${Number(state.zoom.toFixed(1))}×`;
+  $('zoomOut').disabled = state.zoom <= 1;
+  $('zoomIn').disabled = state.zoom >= MAX_ZOOM;
+}
+
+/* ---------- Viewer: zoom and pan ---------- */
+
+function zoomTo(next, fx = .5, fy = .5) {
+  const zoom = Math.min(MAX_ZOOM, Math.max(1, next));
+  // Keep the point under (fx, fy) fixed, both given as fractions of the frame.
+  state.panX = fx - (fx - state.panX) * zoom / state.zoom;
+  state.panY = fy - (fy - state.panY) * zoom / state.zoom;
+  state.zoom = zoom;
+  applyTransform();
+}
+function resetZoom() {
+  state.zoom = 1;
+  state.panX = 0;
+  state.panY = 0;
+  applyTransform();
+}
+function framePoint(event) {
+  const frame = event.target.closest && event.target.closest('.frame') || $('frameAfter');
+  const rect = frame.getBoundingClientRect();
+  return {
+    fx: Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)),
+    fy: Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)),
+  };
+}
+function splitFromEvent(event) {
+  const rect = $('frameAfter').getBoundingClientRect();
+  state.split = Math.min(100, Math.max(0, (event.clientX - rect.left) / rect.width * 100));
+  applySplit();
+}
+
+let drag = null;
+const viewer = $('viewer');
+
+viewer.addEventListener('pointerdown', event => {
+  if (event.button) return;
+  const rect = $('frameAfter').getBoundingClientRect();
+  const dividerX = rect.left + rect.width * state.split / 100;
+  const nearDivider = Math.abs(event.clientX - dividerX) <= 20;
+  if (state.view === 'slider' && (state.zoom === 1 || nearDivider)) {
+    drag = { type: 'split' };
+    splitFromEvent(event);
+  } else if (state.zoom > 1) {
+    drag = { type: 'pan', x: event.clientX, y: event.clientY, panX: state.panX, panY: state.panY };
+    viewer.classList.add('panning');
+  } else {
+    return;
+  }
+  viewer.setPointerCapture(event.pointerId);
+});
+viewer.addEventListener('pointermove', event => {
+  if (!drag) return;
+  if (drag.type === 'split') {
+    splitFromEvent(event);
+  } else {
+    state.panX = drag.panX + (event.clientX - drag.x) / state.frameW;
+    state.panY = drag.panY + (event.clientY - drag.y) / state.frameH;
+    applyTransform();
+  }
+});
+const endDrag = () => {
+  drag = null;
+  viewer.classList.remove('panning');
+};
+viewer.addEventListener('pointerup', endDrag);
+viewer.addEventListener('pointercancel', endDrag);
+viewer.addEventListener('wheel', event => {
+  // When the page itself scrolls (narrow layout), only zoom on an explicit pinch or Ctrl+wheel.
+  if (matchMedia('(max-width: 959px)').matches && !event.ctrlKey) return;
+  event.preventDefault();
+  const { fx, fy } = framePoint(event);
+  zoomTo(state.zoom * Math.exp(-event.deltaY * .002), fx, fy);
+}, { passive: false });
+viewer.addEventListener('dblclick', event => {
+  const { fx, fy } = framePoint(event);
+  if (state.zoom > 1) resetZoom();
+  else zoomTo(3, fx, fy);
+});
+viewer.addEventListener('keydown', event => {
+  if (event.key === '+' || event.key === '=') zoomTo(state.zoom * 1.25);
+  else if (event.key === '-' || event.key === '_') zoomTo(state.zoom / 1.25);
+  else if (event.key === '0') resetZoom();
+  else if (event.target === viewer && state.zoom > 1 && event.key.startsWith('Arrow')) {
+    const step = .1 / state.zoom;
+    if (event.key === 'ArrowLeft') state.panX += step;
+    if (event.key === 'ArrowRight') state.panX -= step;
+    if (event.key === 'ArrowUp') state.panY += step;
+    if (event.key === 'ArrowDown') state.panY -= step;
+    applyTransform();
+  } else return;
+  event.preventDefault();
+});
+new ResizeObserver(layoutViewer).observe(viewer);
+
+/* ---------- Wiring ---------- */
+
+$('sources').addEventListener('change', event => {
+  addSources([...event.target.files]);
+  event.target.value = '';
+});
+$('target').addEventListener('change', event => {
+  if (event.target.files[0]) setTarget(event.target.files[0]);
+  event.target.value = '';
+});
+$('targetReplace').addEventListener('click', () => $('target').click());
+$('targetRemove').addEventListener('click', () => {
+  setTarget(null);
+  $('target').focus();
+});
+wireDrop($('stepSources'), addSources);
+wireDrop($('stepTarget'), files => { if (files[0]) setTarget(files[0]); });
+wireDrop($('canvas'), files => { if (files[0]) setTarget(files[0]); });
+
+// A drop that misses every drop zone must not navigate away and lose the session.
+['dragover', 'drop'].forEach(type => window.addEventListener(type, event => event.preventDefault()));
+
+['color', 'blend', 'restore'].forEach(id => $(id).addEventListener('input', onSettingsChange));
+document.querySelectorAll('input[name=blendMode]').forEach(radio => radio.addEventListener('change', onSettingsChange));
+$('resetSettings').addEventListener('click', () => {
+  applySettings(DEFAULTS);
+  onSettingsChange();
+  $('color').focus();
+});
+
+$('form').addEventListener('submit', event => {
+  event.preventDefault();
+  if (state.running) state.controller.abort();
+  else run();
+});
+document.addEventListener('keydown', event => {
+  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+    event.preventDefault();
+    if (!state.running) run();
+  }
+});
+
+$('split').addEventListener('input', event => {
+  state.split = Number(event.target.value);
+  applySplit();
+});
+document.querySelectorAll('button[data-view]').forEach(button => button.addEventListener('click', () => {
+  state.view = button.dataset.view;
+  saveStored();
+  layoutViewer();
+}));
+$('zoomIn').addEventListener('click', () => zoomTo(state.zoom * 1.5));
+$('zoomOut').addEventListener('click', () => zoomTo(state.zoom / 1.5));
+$('zoomFit').addEventListener('click', resetZoom);
+$('alertClose').addEventListener('click', hideAlert);
+$('recheck').addEventListener('click', checkHealth);
+window.addEventListener('focus', checkHealth);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && !state.running) document.title = BASE_TITLE;
+});
+
+/* ---------- Start ---------- */
+
+if (/Mac|iPhone|iPad/.test(navigator.platform)) $('submitKey').textContent = '⌘+Enter';
+{
+  const stored = loadStored();
+  applySettings({ ...DEFAULTS, ...stored });
+  if (stored.view === 'side' || stored.view === 'slider') state.view = stored.view;
+}
+renderSources();
+renderTarget();
+renderSettings();
+checkHealth();
+</script>
+</body>
+</html>
