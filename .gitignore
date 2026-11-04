@@ -8,3 +8,4 @@ models/**/*.pth
 !data/uploads/.gitkeep
 !data/outputs/.gitkeep
 !models/.gitkeep
+*.zip

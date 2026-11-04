@@ -1,0 +1,23 @@
+# Local Face Compositor — CPU installation
+# Use Python 3.10–3.12. Install with: bash install-cpu.sh
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# Web application and image processing
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+python-multipart>=0.0.9
+numpy==1.26.4
+opencv-python==4.10.0.84
+
+# InsightFace detection/analysis and CPU inference
+insightface==0.7.3
+onnxruntime==1.20.1
+
+# CPU PyTorch for optional GFPGAN restoration
+torch==2.5.1+cpu
+torchvision==0.20.1+cpu
+
+# GFPGAN restoration stack
+basicsr==1.4.2
+facexlib>=0.2.5,<0.4
+gfpgan==1.3.8
