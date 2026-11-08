@@ -168,8 +168,20 @@ def prepare_source_identity(source_candidates, merge_references: bool):
     if fused_norm < 1e-8 or not np.isfinite(fused).all():
         raise RuntimeError("Could not combine the source identity embeddings.")
     fused /= fused_norm
+
+    # Keep the raw ArcFace magnitude for model-specific embedding converters such
+    # as GHOST. FaceFusion averages raw embeddings before the converter as well.
+    raw_embeddings = np.stack([
+        np.asarray(getattr(face, "embedding", normalized_embedding(face)), dtype=np.float32).reshape(-1)
+        for face, _image in source_candidates
+    ])
+    if raw_embeddings.shape != embeddings.shape or not np.isfinite(raw_embeddings).all():
+        raise RuntimeError("Source photos produced incompatible raw identity embeddings.")
+    raw_fused = np.average(raw_embeddings, axis=0, weights=weights).astype(np.float32)
+    if float(np.linalg.norm(raw_fused)) < 1e-8:
+        raise RuntimeError("Could not combine the raw source identity embeddings.")
     return (
-        SimpleNamespace(normed_embedding=fused, embedding=fused),
+        SimpleNamespace(normed_embedding=fused, embedding=raw_fused),
         fused,
         f"merged identity embeddings from {len(source_candidates)} same-person reference photos",
     )
