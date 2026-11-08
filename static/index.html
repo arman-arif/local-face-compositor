@@ -374,7 +374,7 @@ details li + li { margin-top: 5px; }
           <h2 id="sourcesHeading">Source face</h2>
           <span class="step-aside" id="sourceCount">0 of 12</span>
         </div>
-        <p class="step-sub">The face to use. From several photos, one best-detected face is picked; they aren't blended.</p>
+        <p class="step-sub">One face is selected per photo. You can optionally combine identity embeddings from multiple photos of the same person.</p>
         <div class="source-area" id="sourceArea">
         <ul class="thumbs" id="sourceGrid" hidden></ul>
         <label class="drop" id="sourceDrop">
@@ -382,6 +382,14 @@ details li + li { margin-top: 5px; }
           <span id="sourceDropText"><strong>Drop photos</strong> or click to browse</span>
           <small>JPG, PNG or WebP, up to 25 MB each</small>
         </label>
+        </div>
+        <div class="setting">
+          <label class="switch">
+            <span class="switch-title">Combine same-person references</span>
+            <input class="vh" id="mergeSources" type="checkbox" aria-describedby="mergeSourcesHint">
+            <span class="switch-track" aria-hidden="true"></span>
+            <span class="hint" id="mergeSourcesHint">Enable only when every source photo shows the same person. The app checks embedding similarity and rejects likely mixed identities.</span>
+          </label>
         </div>
         <p class="field-msg" id="sourceMsg" role="alert" hidden></p>
       </section>
@@ -538,7 +546,7 @@ const MAX_BYTES = 25 * 1024 * 1024;
 const MAX_HISTORY = 12;
 const MAX_ZOOM = 8;
 const ALLOWED_NAME = /\.(jpe?g|png|webp)$/i;
-const DEFAULTS = { color: 35, blend: 95, blendMode: 'feather', restore: false };
+const DEFAULTS = { color: 35, blend: 95, blendMode: 'feather', restore: false, mergeSources: false };
 const STORE_KEY = 'local-face-compositor';
 const BASE_TITLE = document.title;
 const BLEND_HINTS = {
@@ -601,6 +609,7 @@ function getSettings() {
     blend: Number($('blend').value),
     blendMode: document.querySelector('input[name=blendMode]:checked').value,
     restore: $('restore').checked,
+    mergeSources: $('mergeSources').checked,
   };
 }
 function applySettings(values) {
@@ -609,6 +618,7 @@ function applySettings(values) {
   const radio = document.querySelector(`input[name=blendMode][value="${values.blendMode}"]`);
   if (radio) radio.checked = true;
   $('restore').checked = Boolean(values.restore) && !$('restore').disabled;
+  $('mergeSources').checked = Boolean(values.mergeSources);
 }
 function loadStored() {
   try {
@@ -633,7 +643,7 @@ function renderSettings() {
   fillRange($('color'));
   fillRange($('blend'));
   $('blendHint').textContent = BLEND_HINTS[settings.blendMode];
-  $('resetSettings').hidden = ['color', 'blend', 'blendMode', 'restore'].every(k => settings[k] === DEFAULTS[k]);
+  $('resetSettings').hidden = ['color', 'blend', 'blendMode', 'restore', 'mergeSources'].every(k => settings[k] === DEFAULTS[k]);
   renderReady();
 }
 function onSettingsChange() {
@@ -910,6 +920,7 @@ async function run() {
   data.append('blend_strength', String(settings.blend / 100));
   data.append('blend_mode', settings.blendMode);
   data.append('restore_face', String(settings.restore));
+  data.append('merge_source_references', String(settings.mergeSources));
   const targetFile = state.target.file;
 
   hideAlert();
@@ -948,6 +959,7 @@ async function run() {
     settings,
     seconds: (performance.now() - started) / 1000,
     device: payload.device,
+    identitySimilarity: payload.identity_similarity,
     sig,
   };
   state.history.push(entry);
@@ -992,14 +1004,18 @@ function renderFilm() {
 }
 function describeSettings(settings) {
   const parts = [BLEND_NAMES[settings.blendMode], `color ${settings.color}%`, `blend ${settings.blend}%`];
-  if (settings.restore) parts.push('restored');
+  if (settings.restore) parts.push('restored lightly');
+  if (settings.mergeSources) parts.push('merged references');
   return parts.join(', ');
 }
 async function showEntry(entry) {
   state.current = entry;
   $('imgBefore').src = entry.before;
   $('imgAfter').src = entry.after;
-  $('meta').textContent = `Run ${entry.id}: ${describeSettings(entry.settings)}, ${entry.seconds.toFixed(1)} s on ${entry.device}`;
+  const identityNote = Number.isFinite(entry.identitySimilarity)
+    ? `, ArcFace cosine diagnostic ${entry.identitySimilarity.toFixed(3)}`
+    : '';
+  $('meta').textContent = `Run ${entry.id}: ${describeSettings(entry.settings)}, ${entry.seconds.toFixed(1)} s on ${entry.device}${identityNote}`;
   $('download').href = entry.after;
   $('download').download = `composite-run${entry.id}-${entry.settings.blendMode}-c${entry.settings.color}-b${entry.settings.blend}.png`;
   renderStage();
@@ -1195,7 +1211,7 @@ wireDrop($('canvas'), files => { if (files[0]) setTarget(files[0]); });
 // A drop that misses every drop zone must not navigate away and lose the session.
 ['dragover', 'drop'].forEach(type => window.addEventListener(type, event => event.preventDefault()));
 
-['color', 'blend', 'restore'].forEach(id => $(id).addEventListener('input', onSettingsChange));
+['color', 'blend', 'restore', 'mergeSources'].forEach(id => $(id).addEventListener('input', onSettingsChange));
 document.querySelectorAll('input[name=blendMode]').forEach(radio => radio.addEventListener('change', onSettingsChange));
 $('resetSettings').addEventListener('click', () => {
   applySettings(DEFAULTS);
