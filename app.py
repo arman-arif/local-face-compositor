@@ -102,6 +102,24 @@ def face_area(face) -> float:
     return width * height * confidence
 
 
+def source_quality_score(face, image: np.ndarray) -> float:
+    """Estimate reference usefulness from detector confidence, face size and sharpness."""
+    height, width = image.shape[:2]
+    box = np.asarray(face.bbox, dtype=np.float32)
+    x1, y1 = np.maximum(box[:2].astype(int), 0)
+    x2, y2 = np.minimum(box[2:].astype(int), [width, height])
+    if x2 <= x1 or y2 <= y1:
+        return 1e-3
+    crop = image[y1:y2, x1:x2]
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    sharpness_score = float(np.clip(np.log1p(sharpness) / np.log1p(500.0), 0.1, 1.0))
+    face_fraction = float((x2 - x1) * (y2 - y1) / max(width * height, 1))
+    size_score = float(np.clip(np.sqrt(face_fraction / 0.08), 0.1, 1.0))
+    detector_score = float(np.clip(getattr(face, "det_score", 0.5), 0.1, 1.0))
+    return max(1e-3, sharpness_score * size_score * detector_score)
+
+
 def normalized_embedding(face) -> np.ndarray:
     """Return a finite, unit-length ArcFace embedding for an InsightFace face."""
     raw = getattr(face, "normed_embedding", None)
@@ -138,7 +156,7 @@ def prepare_source_identity(source_candidates, merge_references: bool):
             "Use photos of the same person, or turn off reference merging."
         )
     weights = np.asarray(
-        [max(face_area(face), 1.0) ** 0.5 for face, _image in source_candidates],
+        [source_quality_score(face, image) for face, image in source_candidates],
         dtype=np.float32,
     )
     weights /= max(float(weights.sum()), 1e-8)
