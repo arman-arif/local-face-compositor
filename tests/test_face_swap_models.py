@@ -67,3 +67,23 @@ def test_source_quality_prefers_clearer_face():
         det_score=0.95,
     )
     assert source_quality_score(face, sharp) > source_quality_score(face, blurred)
+
+
+def test_source_identity_preserves_raw_embedding_for_converter():
+    from app import prepare_source_identity
+    faces = []
+    for index, magnitude in enumerate((2.0, 4.0)):
+        embedding = np.zeros(512, dtype=np.float32)
+        embedding[0] = magnitude
+        face = SimpleNamespace(
+            embedding=embedding,
+            normed_embedding=np.eye(1, 512, dtype=np.float32)[0],
+            bbox=np.array([10, 10, 210, 210], dtype=np.float32),
+            det_score=0.99,
+        )
+        image = np.full((240, 240, 3), 127 + index, dtype=np.uint8)
+        faces.append((face, image))
+    fused_face, fused_normalized, _ = prepare_source_identity(faces, True)
+    assert np.allclose(fused_face.embedding[0], 3.0, atol=1e-5)
+    assert np.isclose(np.linalg.norm(fused_normalized), 1.0, atol=1e-5)
+    assert np.allclose(fused_face.normed_embedding, fused_normalized)
