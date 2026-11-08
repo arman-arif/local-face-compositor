@@ -51,7 +51,9 @@ class Ghost256Swapper:
     def get(self, target, target_face, source_face, paste_back=False):
         if paste_back:
             raise ValueError("GHOST adapter returns an aligned crop.")
-        raw = getattr(source_face, "embedding", None)
+        raw = getattr(source_face, "normed_embedding", None)
+        if raw is None:
+            raw = getattr(source_face, "embedding", None)
         if raw is None:
             raise RuntimeError("Source face has no ArcFace embedding.")
         embedding = np.asarray(raw, dtype=np.float32).reshape(1, -1)
