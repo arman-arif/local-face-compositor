@@ -21,6 +21,10 @@ PY
   --index-url https://download.pytorch.org/whl/cpu \
   torch==2.5.1+cpu torchvision==0.20.1+cpu
 "$PYTHON_BIN" -m pip install --no-build-isolation -r ../requirements/cpu.txt
+
+# BasicSR 1.4.2 imports a torchvision module removed in 0.17; patch it so GFPGAN imports.
+bash ./patch-basicsr.sh
+
 "$PYTHON_BIN" -m pip check
 
 echo "CPU environment with GFPGAN support installed."

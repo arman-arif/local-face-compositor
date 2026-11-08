@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 .insightface/
+gfpgan/
 data/uploads/*
 data/outputs/*
 models/**/*.onnx

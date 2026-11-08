@@ -20,6 +20,10 @@ PY
   --index-url https://download.pytorch.org/whl/cu124 \
   torch==2.5.1+cu124 torchvision==0.20.1+cu124
 "$PYTHON_BIN" -m pip install --no-build-isolation -r ../requirements/gpu.txt
+
+# BasicSR 1.4.2 imports a torchvision module removed in 0.17; patch it so GFPGAN imports.
+bash ./patch-basicsr.sh
+
 "$PYTHON_BIN" -m pip check
 
 "$PYTHON_BIN" - <<'PY'

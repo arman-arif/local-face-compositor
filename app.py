@@ -171,10 +171,18 @@ def restore_face_optional(face_crop: np.ndarray) -> np.ndarray:
     try:
         import torch
         from gfpgan import GFPGANer
-    except Exception as exc:
+    except ModuleNotFoundError as exc:
+        missing = exc.name or "a dependency"
+        if missing == "gfpgan" or missing.startswith("gfpgan."):
+            raise RuntimeError(
+                "GFPGAN is not installed. Install the optional restoration stack, or uncheck face restoration."
+            ) from exc
         raise RuntimeError(
-            "GFPGAN is not installed. See README.md for optional restoration setup, or uncheck face restoration."
+            f"GFPGAN failed to import: missing module '{missing}'. Run scripts/patch-basicsr.sh to fix "
+            "BasicSR's removed torchvision import, or see README.md for restoration setup."
         ) from exc
+    except Exception as exc:
+        raise RuntimeError(f"GFPGAN failed to import: {exc}") from exc
     try:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         restorer = GFPGANer(

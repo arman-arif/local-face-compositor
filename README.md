@@ -44,11 +44,14 @@ Open <http://127.0.0.1:8000>. `/api/health` reports required model-file presence
 
 ## Optional GFPGAN restoration
 
-GFPGAN is not required for normal use and is intentionally not part of the default dependency set. First install a compatible PyTorch build for your machine using the official PyTorch installation selector. Then install the optional dependency:
+GFPGAN is not required for normal use and is intentionally not part of the default dependency set. The bundled `scripts/install-cpu.sh` and `scripts/install-gpu.sh` already include it. To add it to an existing environment, install `requirements/restoration.txt`, then run the BasicSR patch:
 
 ```bash
-pip install -r requirements-restoration.txt
+pip install -r requirements/restoration.txt
+bash scripts/patch-basicsr.sh
 ```
+
+`patch-basicsr.sh` is required because BasicSR 1.4.2 imports `torchvision.transforms.functional_tensor`, a module removed in torchvision 0.17. Without it, `import gfpgan` fails even though GFPGAN is installed.
 
 Place the licensed GFPGAN v1.4 weights at:
 
@@ -84,5 +87,5 @@ Select **Optional face restoration** in the UI to run it. Restoration may sharpe
 - **Missing model file:** provide `models/inswapper_128.onnx` from a source whose terms permit your use.
 - **No CUDA provider:** the app falls back to CPU when ONNX Runtime does not report `CUDAExecutionProvider`. CPU inference will usually be slower. For GPU execution, resolve driver/CUDA/cuDNN/runtime compatibility first.
 - **No face detected:** use clear, well-lit images where the face is large enough and not heavily occluded.
-- **Restoration fails:** uncheck the restoration toggle or install a compatible GFPGAN/PyTorch environment and provide the model file.
+- **Restoration fails:** uncheck the restoration toggle, or install a compatible GFPGAN/PyTorch environment and provide the model file. If the error mentions `functional_tensor`, BasicSR needs patching — run `bash scripts/patch-basicsr.sh`.
 - **Unsatisfactory blend:** compare feather blending with seamless clone and adjust the color-match and blend-strength sliders.
