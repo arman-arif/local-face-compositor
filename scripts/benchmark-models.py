@@ -53,7 +53,7 @@ def main():
                     "target": target.name, "model": model, "status": "ok",
                     "seconds": round(elapsed, 3), "device": device,
                     "arcface_cosine": "" if similarity is None else round(similarity, 5),
-                    "output": str(out.relative_to(ROOT)), "error": "",
+                    "output": str(out), "error": "",
                 })
                 print(f"[ok] {target.name} | {model} | {elapsed:.2f}s | ArcFace={similarity}")
             except Exception as exc:
