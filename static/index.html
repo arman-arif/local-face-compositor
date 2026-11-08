@@ -427,6 +427,15 @@ details li + li { margin-top: 5px; }
         </div>
 
         <div class="setting">
+          <label for="swapModel">Face-swap model</label>
+          <select id="swapModel">
+            <option value="inswapper_128">InSwapper 128 (baseline)</option>
+            <option value="ghost_1_256">GHOST 256 (experimental)</option>
+          </select>
+          <p class="hint" id="swapModelHint">Keep the baseline until you have benchmarked both models on your own images.</p>
+        </div>
+
+        <div class="setting">
           <div class="setting-top"><label for="color">Color / lighting match</label><output id="colorValue" for="color">35%</output></div>
           <input id="color" type="range" min="0" max="80" step="5" value="35">
           <div class="scale" aria-hidden="true"><span>Keep source tone</span><span>Match target photo</span></div>
@@ -610,6 +619,7 @@ function getSettings() {
     blendMode: document.querySelector('input[name=blendMode]:checked').value,
     restore: $('restore').checked,
     mergeSources: $('mergeSources').checked,
+    swapModel: $('swapModel').value,
   };
 }
 function applySettings(values) {
@@ -619,6 +629,7 @@ function applySettings(values) {
   if (radio) radio.checked = true;
   $('restore').checked = Boolean(values.restore) && !$('restore').disabled;
   $('mergeSources').checked = Boolean(values.mergeSources);
+  $('swapModel').value = values.swapModel || 'inswapper_128';
 }
 function loadStored() {
   try {
@@ -643,7 +654,7 @@ function renderSettings() {
   fillRange($('color'));
   fillRange($('blend'));
   $('blendHint').textContent = BLEND_HINTS[settings.blendMode];
-  $('resetSettings').hidden = ['color', 'blend', 'blendMode', 'restore', 'mergeSources'].every(k => settings[k] === DEFAULTS[k]);
+  $('resetSettings').hidden = ['color', 'blend', 'blendMode', 'restore', 'mergeSources', 'swapModel'].every(k => settings[k] === DEFAULTS[k]);
   renderReady();
 }
 function onSettingsChange() {
@@ -789,6 +800,17 @@ function renderHealth() {
     chips.push(chip(state.health.swap_model_present ? 'Swap model ready' : 'Swap model missing', state.health.swap_model_present ? 'ok' : 'bad'));
     chips.push(chip(`Runs on ${deviceName()}`, 'neutral'));
   }
+  const available = state.health?.available_swap_models || {};
+  const modelSelect = $('swapModel');
+  [...modelSelect.options].forEach(option => {
+    const ready = Boolean(available[option.value]);
+    option.disabled = !ready;
+    if (option.value === 'ghost_1_256' && !ready) option.textContent = 'GHOST 256 (model files missing)';
+  });
+  if (modelSelect.selectedOptions[0]?.disabled) modelSelect.value = 'inswapper_128';
+  $('swapModelHint').textContent = available.ghost_1_256
+    ? 'GHOST is experimental. Compare results; 256px does not guarantee better identity fidelity.'
+    : 'GHOST requires ghost_1_256.onnx and crossface_ghost.onnx in models/.';
   $('chips').replaceChildren(...chips);
 
   if (state.offline) {
@@ -921,6 +943,7 @@ async function run() {
   data.append('blend_mode', settings.blendMode);
   data.append('restore_face', String(settings.restore));
   data.append('merge_source_references', String(settings.mergeSources));
+  data.append('swap_model', settings.swapModel);
   const targetFile = state.target.file;
 
   hideAlert();
@@ -1006,6 +1029,7 @@ function describeSettings(settings) {
   const parts = [BLEND_NAMES[settings.blendMode], `color ${settings.color}%`, `blend ${settings.blend}%`];
   if (settings.restore) parts.push('restored lightly');
   if (settings.mergeSources) parts.push('merged references');
+  parts.push(settings.swapModel === 'ghost_1_256' ? 'GHOST 256' : 'InSwapper 128');
   return parts.join(', ');
 }
 async function showEntry(entry) {
@@ -1211,7 +1235,7 @@ wireDrop($('canvas'), files => { if (files[0]) setTarget(files[0]); });
 // A drop that misses every drop zone must not navigate away and lose the session.
 ['dragover', 'drop'].forEach(type => window.addEventListener(type, event => event.preventDefault()));
 
-['color', 'blend', 'restore', 'mergeSources'].forEach(id => $(id).addEventListener('input', onSettingsChange));
+['color', 'blend', 'restore', 'mergeSources', 'swapModel'].forEach(id => $(id).addEventListener('input', onSettingsChange));
 document.querySelectorAll('input[name=blendMode]').forEach(radio => radio.addEventListener('change', onSettingsChange));
 $('resetSettings').addEventListener('click', () => {
   applySettings(DEFAULTS);
