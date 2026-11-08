@@ -171,10 +171,13 @@ def prepare_source_identity(source_candidates, merge_references: bool):
 
     # Keep the raw ArcFace magnitude for model-specific embedding converters such
     # as GHOST. FaceFusion averages raw embeddings before the converter as well.
-    raw_embeddings = np.stack([
-        np.asarray(getattr(face, "embedding", normalized_embedding(face)), dtype=np.float32).reshape(-1)
-        for face, _image in source_candidates
-    ])
+    raw_embedding_vectors = []
+    for face, _image in source_candidates:
+        raw = getattr(face, "embedding", None)
+        if raw is None:
+            raw = normalized_embedding(face)
+        raw_embedding_vectors.append(np.asarray(raw, dtype=np.float32).reshape(-1))
+    raw_embeddings = np.stack(raw_embedding_vectors)
     if raw_embeddings.shape != embeddings.shape or not np.isfinite(raw_embeddings).all():
         raise RuntimeError("Source photos produced incompatible raw identity embeddings.")
     raw_fused = np.average(raw_embeddings, axis=0, weights=weights).astype(np.float32)
