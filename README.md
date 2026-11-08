@@ -106,9 +106,9 @@ GHOST requires two separate ONNX assets:
 - `models/ghost_1_256.onnx` — GHOST-1 face-swap network
 - `models/crossface_ghost.onnx` — GHOST-specific ArcFace embedding converter
 
-Run `bash scripts/download-models.sh` to fetch the model assets. Review the exact terms for both model weights before commercial use; the swapper and embedding converter are separate assets and may have separate licensing. The model metadata identifies GHOST-1 as Apache-2.0, but that must not be assumed to cover the converter weights.
+Run `bash scripts/download-models.sh` to fetch the baseline model assets. GHOST is deliberately opt-in because its swapper file is approximately 515 MB: run `bash scripts/download-models.sh --with-ghost` to download both experimental GHOST assets. Review the exact terms for both model weights before commercial use; the swapper and embedding converter are separate assets and may have separate licensing. The model metadata identifies GHOST-1 as Apache-2.0, but that must not be assumed to cover the converter weights.
 
-The GHOST adapter performs its own five-point ArcFace 112-template alignment scaled to a 256 crop, converts the source ArcFace embedding, normalizes target RGB input to [-1, 1], and converts the model output back to BGR. It does not reuse InSwapper's preprocessing.
+The GHOST adapter follows FaceFusion's `arcface_112_v1` five-point template and alignment method at 256×256, passes the raw output of the GHOST-specific embedding converter to the swapper, normalizes target RGB input to [-1, 1], and converts the model output back to BGR. It does not reuse InSwapper's preprocessing.
 
 ### Benchmark procedure
 
@@ -121,7 +121,7 @@ The GHOST adapter performs its own five-point ArcFace 112-template alignment sca
 python scripts/benchmark-models.py --sources samples/sources --targets samples/targets
 ```
 
-5. Compare output images side by side. The CSV records model, runtime, device, success/failure and output ArcFace cosine similarity.
+5. Compare output images side by side. The runner warms each model before measuring, repeats each target/model combination, and records median/min/max end-to-end runtime, device, success/failure and output ArcFace cosine similarity. All source images are fused as same-person references for each target.
 6. Do not select a new default from the ArcFace score alone. Review identity likeness, pose/expression preservation, facial geometry, skin texture, occlusion handling, boundary artifacts and runtime. Keep the model with the best overall result on the same evaluation set.
 
 A small adapter contract test is available:
