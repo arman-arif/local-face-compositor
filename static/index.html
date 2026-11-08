@@ -1244,7 +1244,8 @@ wireDrop($('canvas'), files => { if (files[0]) setTarget(files[0]); });
 // A drop that misses every drop zone must not navigate away and lose the session.
 ['dragover', 'drop'].forEach(type => window.addEventListener(type, event => event.preventDefault()));
 
-['color', 'blend', 'restore', 'mergeSources', 'swapModel'].forEach(id => $(id).addEventListener('input', onSettingsChange));
+['color', 'blend', 'restore', 'mergeSources'].forEach(id => $(id).addEventListener('input', onSettingsChange));
+$('swapModel').addEventListener('change', onSettingsChange);
 document.querySelectorAll('input[name=blendMode]').forEach(radio => radio.addEventListener('change', onSettingsChange));
 $('resetSettings').addEventListener('click', () => {
   applySettings(DEFAULTS);
