@@ -95,3 +95,39 @@ Select **Optional face restoration** in the UI to run low-strength restoration. 
 - **Different source identities:** keep reference merging off, or upload only clear photos of the same person. The app rejects reference sets with low embedding agreement.
 - **Low identity similarity:** use one or more sharp, well-lit source photos with different angles; keep GFPGAN off; compare the ArcFace diagnostic across runs. The InSwapper-128 model itself limits attainable detail and identity fidelity.
 - **Unsatisfactory blend:** compare feather blending with seamless clone and adjust the color-match and blend-strength sliders.
+
+
+## Experimental model adapters and identity benchmark
+
+The application now has a model-adapter boundary. InSwapper-128 remains the default baseline. GHOST-1 256 is an **experimental comparison candidate**, not a claim of better identity fidelity.
+
+GHOST requires two separate ONNX assets:
+
+- `models/ghost_1_256.onnx` — GHOST-1 face-swap network
+- `models/crossface_ghost.onnx` — GHOST-specific ArcFace embedding converter
+
+Run `bash scripts/download-models.sh` to fetch the model assets. Review the exact terms for both model weights before commercial use; the swapper and embedding converter are separate assets and may have separate licensing. The model metadata identifies GHOST-1 as Apache-2.0, but that must not be assumed to cover the converter weights.
+
+The GHOST adapter performs its own 112-template five-point alignment scaled to a 256 crop, converts the source ArcFace embedding, normalizes target RGB input to [-1, 1], and converts the model output back to BGR. It does not reuse InSwapper's preprocessing.
+
+### Benchmark procedure
+
+1. Prepare a fixed set of clear source reference photos of one consenting person.
+2. Prepare target photos covering frontal and angled poses, different expressions, lighting and image quality.
+3. Keep source/target pairs identical across model runs.
+4. Select each model in the UI, or run:
+
+```bash
+python scripts/benchmark-models.py --sources samples/sources --targets samples/targets
+```
+
+5. Compare output images side by side. The CSV records model, runtime, device, success/failure and output ArcFace cosine similarity.
+6. Do not select a new default from the ArcFace score alone. Review identity likeness, pose/expression preservation, facial geometry, skin texture, occlusion handling, boundary artifacts and runtime. Keep the model with the best overall result on the same evaluation set.
+
+A small adapter contract test is available:
+
+```bash
+pytest -q tests/test_face_swap_models.py
+```
+
+The benchmark runner currently reports identity similarity and inference time; visual quality still requires human review. No model weights or representative evaluation dataset are committed. Until the model weights are installed and inference is run, GHOST compatibility and quality remain unverified. InSwapper remains the default.
