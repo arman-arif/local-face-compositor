@@ -59,22 +59,26 @@ Place the licensed GFPGAN v1.4 weights at:
 models/GFPGANv1.4.pth
 ```
 
-Select **Optional face restoration** in the UI to run it. Restoration may sharpen details, but can change facial features and identity likeness. Keep it off unless you prefer the restored result.
+Select **Optional face restoration** in the UI to run low-strength restoration. This is cached between requests, but it may still change facial features; keep it off when identity likeness is the priority.
 
 ## Processing pipeline
 
 1. Detect faces in the target and every source image.
-2. Select the largest/high-confidence face in the target and the highest-area/high-confidence source face among uploaded references.
-3. Run the local InsightFace swapper to create an aligned crop.
-4. Optionally restore the aligned face crop with GFPGAN.
-5. Match LAB statistics conservatively against the target's aligned face crop.
-6. Warp the crop and soft facial mask into the target image, then feather-blend or try OpenCV seamless clone.
-7. Save the result as a PNG and show a before/after preview.
+2. Select the largest/high-confidence face in the target and one detected face per source photo.
+3. By default, use the best detected source face. Optionally enable **Combine same-person references** to average normalized ArcFace embeddings from multiple source photos. Use this only when every reference depicts the same person; likely mixed identities are rejected.
+4. Run the local InSwapper model to create an aligned 128×128 crop.
+5. Optionally apply cached, low-strength GFPGAN restoration. It remains opt-in because restoration can invent or alter identity details.
+6. Match LAB statistics conservatively against the target's aligned face crop.
+7. Warp the crop and convex-hull facial mask into the target image, then feather-blend or try OpenCV seamless clone.
+8. Run an ArcFace cosine-similarity diagnostic between the final face and the source identity embedding. This is a comparison signal, not a probability, identity guarantee, or substitute for visual review.
+9. Save the result as a PNG and show a before/after preview.
 
 ## Limitations
 
-- This is a prototype. The 128×128 InSwapper model has detail limitations and may not reproduce a person's face perfectly. Higher-resolution alternatives require a separate, compatible inference backend; this project does not claim to support HyperSwap directly.
-- Multiple reference images are accepted, but the first version selects one detected source face; it does not fuse identity information across references.
+- This is a prototype. The 128×128 InSwapper model is the main quality ceiling: it can lose fine identity details and cannot guarantee a perfectly identical result. A stronger swap model/backend is required for a substantial quality jump.
+- Multi-reference fusion combines identity embeddings, not image pixels. Its benefit depends on clear, varied photos of the same person; mixed identities are rejected using a conservative ArcFace similarity check.
+- GFPGAN is a generative restoration model, not an identity-preservation model. The app now caches it and applies it at a conservative weight, but leaving restoration off will often preserve more of the original swapper output.
+- The ArcFace diagnostic can vary with pose, expression, occlusion, lighting and detector quality. Compare scores only across runs made with the same source/target inputs; a higher score is not proof that the face is identical.
 - The color match is intentionally conservative and may need adjustment for unusual lighting, makeup, or skin tones.
 - Seamless clone sometimes looks worse than feather blending. Compare both modes.
 - Inference has not been verified until you install the dependencies and model weights on your machine.
@@ -88,4 +92,6 @@ Select **Optional face restoration** in the UI to run it. Restoration may sharpe
 - **No CUDA provider:** the app falls back to CPU when ONNX Runtime does not report `CUDAExecutionProvider`. CPU inference will usually be slower. For GPU execution, resolve driver/CUDA/cuDNN/runtime compatibility first.
 - **No face detected:** use clear, well-lit images where the face is large enough and not heavily occluded.
 - **Restoration fails:** uncheck the restoration toggle, or install a compatible GFPGAN/PyTorch environment and provide the model file. If the error mentions `functional_tensor`, BasicSR needs patching — run `bash scripts/patch-basicsr.sh`.
+- **Different source identities:** keep reference merging off, or upload only clear photos of the same person. The app rejects reference sets with low embedding agreement.
+- **Low identity similarity:** use one or more sharp, well-lit source photos with different angles; keep GFPGAN off; compare the ArcFace diagnostic across runs. The InSwapper-128 model itself limits attainable detail and identity fidelity.
 - **Unsatisfactory blend:** compare feather blending with seamless clone and adjust the color-match and blend-strength sliders.

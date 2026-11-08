@@ -1,6 +1,7 @@
 import shutil
 import threading
 import uuid
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Literal
 
@@ -31,6 +32,8 @@ _MODEL_LOCK = threading.Lock()
 _FACE_APP = None
 _SWAPPER = None
 _PROVIDER_NAMES: list[str] = []
+_GFP_GANER = None
+_RESTORER_LOCK = threading.Lock()
 
 
 async def save_image(upload: UploadFile, folder: Path) -> Path:
@@ -104,30 +107,101 @@ def face_area(face) -> float:
     return width * height * confidence
 
 
+def normalized_embedding(face) -> np.ndarray:
+    """Return a finite, unit-length ArcFace embedding for an InsightFace face."""
+    raw = getattr(face, "normed_embedding", None)
+    if raw is None:
+        raw = getattr(face, "embedding", None)
+    if raw is None:
+        raise RuntimeError("InsightFace did not return a face identity embedding.")
+    vector = np.asarray(raw, dtype=np.float32).reshape(-1)
+    norm = float(np.linalg.norm(vector))
+    if vector.size == 0 or not np.isfinite(vector).all() or norm < 1e-8:
+        raise RuntimeError("A source face produced an invalid identity embedding.")
+    return vector / norm
+
+
+def prepare_source_identity(source_candidates, merge_references: bool):
+    """Select one source face or fuse embeddings from confirmed same-person references."""
+    if not source_candidates:
+        raise RuntimeError("No usable source faces were found.")
+    best_face, _best_image = max(source_candidates, key=lambda item: face_area(item[0]))
+    if not merge_references or len(source_candidates) == 1:
+        embedding = normalized_embedding(best_face)
+        return SimpleNamespace(normed_embedding=embedding), embedding, "best detected source face"
+
+    embeddings = np.stack([normalized_embedding(face) for face, _image in source_candidates])
+    if len({vector.shape for vector in embeddings}) != 1:
+        raise RuntimeError("Source photos produced incompatible identity embeddings.")
+    similarities = embeddings @ embeddings.T
+    pairwise = similarities[np.triu_indices(len(embeddings), k=1)]
+    min_similarity = float(np.min(pairwise)) if pairwise.size else 1.0
+    if min_similarity < 0.20:
+        raise RuntimeError(
+            "The source photos do not appear to show one consistent identity "
+            f"(lowest ArcFace cosine similarity: {min_similarity:.3f}). "
+            "Use photos of the same person, or turn off reference merging."
+        )
+    weights = np.asarray(
+        [max(face_area(face), 1.0) ** 0.5 for face, _image in source_candidates],
+        dtype=np.float32,
+    )
+    weights /= max(float(weights.sum()), 1e-8)
+    fused = np.average(embeddings, axis=0, weights=weights).astype(np.float32)
+    fused_norm = float(np.linalg.norm(fused))
+    if fused_norm < 1e-8 or not np.isfinite(fused).all():
+        raise RuntimeError("Could not combine the source identity embeddings.")
+    fused /= fused_norm
+    return (
+        SimpleNamespace(normed_embedding=fused),
+        fused,
+        f"merged identity embeddings from {len(source_candidates)} same-person reference photos",
+    )
+
+
+def measure_identity_similarity(face_app, result: np.ndarray, source_embedding: np.ndarray, target_face):
+    """Measure output-to-reference ArcFace cosine similarity as a diagnostic, not a guarantee."""
+    try:
+        result_faces = face_app.get(result)
+        if not result_faces:
+            return None
+        target_box = np.asarray(target_face.bbox, dtype=np.float32)
+        target_center = (target_box[:2] + target_box[2:]) / 2.0
+        def center_distance(face):
+            box = np.asarray(face.bbox, dtype=np.float32)
+            center = (box[:2] + box[2:]) / 2.0
+            return float(np.linalg.norm(center - target_center))
+        closest = min(result_faces, key=center_distance)
+        output_embedding = normalized_embedding(closest)
+        if output_embedding.shape != source_embedding.shape:
+            return None
+        return float(np.clip(np.dot(output_embedding, source_embedding), -1.0, 1.0))
+    except Exception:
+        return None
+
+
 def make_face_mask(face, affine: np.ndarray, size: int = 128) -> np.ndarray:
-    """Build a soft face mask in the swap model's aligned-crop coordinate space."""
+    """Build a soft aligned-crop mask from the convex hull of dense facial landmarks."""
     mask = np.zeros((size, size), dtype=np.uint8)
     landmarks = getattr(face, "landmark_2d_106", None)
-    # Face outline indices follow the 106-point contour used by common InsightFace swap pipelines.
-    contour_indices = np.array([
-        1, 9, 10, 11, 12, 13, 14, 15, 16, 2, 3, 4, 5, 6, 7, 8, 0,
-        24, 23, 22, 21, 20, 19, 18, 32, 31, 30, 29, 28, 27, 26, 25,
-        17, 101, 105, 104, 103, 51, 49, 48, 43
-    ], dtype=np.int32)
-
-    if landmarks is not None and len(landmarks) > int(contour_indices.max()):
-        points = np.asarray(landmarks, dtype=np.float32)[contour_indices].reshape(1, -1, 2)
-        points_crop = cv2.transform(points, affine).round().astype(np.int32)
-        cv2.fillPoly(mask, points_crop, 255)
-        # Expand slightly to cover the edge of the swapped face, but not the full hairstyle.
-        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
-    else:
-        # Fallback mask for models that don't expose 106 facial landmarks.
-        cv2.ellipse(mask, (size // 2, int(size * 0.56)), (int(size * 0.39), int(size * 0.45)), 0, 0, 360, 255, -1)
-
-    # Feather only the edge; preserve the center of the face at full opacity.
-    return cv2.GaussianBlur(mask, (15, 15), sigmaX=0, sigmaY=0).astype(np.float32) / 255.0
-
+    if landmarks is not None and len(landmarks) >= 20:
+        points = np.asarray(landmarks, dtype=np.float32).reshape(1, -1, 2)
+        points_crop = cv2.transform(points, affine).reshape(-1, 2)
+        points_crop = np.round(points_crop).astype(np.int32)
+        hull = cv2.convexHull(points_crop)
+        if hull is not None and len(hull) >= 3:
+            cv2.fillConvexPoly(mask, hull, 255)
+            mask = cv2.dilate(
+                mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1
+            )
+        else:
+            landmarks = None
+    if landmarks is None or len(landmarks) < 20:
+        cv2.ellipse(
+            mask, (size // 2, int(size * 0.56)),
+            (int(size * 0.39), int(size * 0.45)), 0, 0, 360, 255, -1,
+        )
+    return cv2.GaussianBlur(mask, (15, 15), sigmaX=0).astype(np.float32) / 255.0
 
 def match_lab_color(swapped: np.ndarray, reference: np.ndarray, mask: np.ndarray, strength: float) -> np.ndarray:
     """Conservative LAB mean/std matching against target face lighting and color."""
@@ -161,45 +235,56 @@ def match_lab_color(swapped: np.ndarray, reference: np.ndarray, mask: np.ndarray
     return np.clip(result.astype(np.float32) * local_alpha + swapped.astype(np.float32) * (1-local_alpha), 0, 255).astype(np.uint8)
 
 
-def restore_face_optional(face_crop: np.ndarray) -> np.ndarray:
-    """Optional GFPGAN restoration. It never fetches weights automatically."""
+def restore_face_optional(face_crop: np.ndarray, strength: float = 0.25) -> np.ndarray:
+    """Run cached, low-strength GFPGAN restoration to reduce identity-altering changes."""
+    global _GFP_GANER
     model_path = MODELS / "GFPGANv1.4.pth"
     if not model_path.exists():
         raise RuntimeError(
-            "Face restoration was selected, but models/GFPGANv1.4.pth is missing. Add licensed weights or uncheck restoration."
+            "Face restoration was selected, but models/GFPGANv1.4.pth is missing. "
+            "Add licensed weights or uncheck restoration."
         )
+    with _RESTORER_LOCK:
+        if _GFP_GANER is None:
+            try:
+                import torch
+                from gfpgan import GFPGANer
+            except ModuleNotFoundError as exc:
+                missing = exc.name or "a dependency"
+                if missing == "gfpgan" or missing.startswith("gfpgan."):
+                    raise RuntimeError(
+                        "GFPGAN is not installed. Install the optional restoration stack, "
+                        "or uncheck face restoration."
+                    ) from exc
+                raise RuntimeError(
+                    f"GFPGAN failed to import: missing module '{missing}'. Run "
+                    "scripts/patch-basicsr.sh or see README.md for restoration setup."
+                ) from exc
+            except Exception as exc:
+                raise RuntimeError(f"GFPGAN failed to import: {exc}") from exc
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            try:
+                _GFP_GANER = GFPGANer(
+                    model_path=str(model_path), upscale=1, arch="clean",
+                    channel_multiplier=2, bg_upsampler=None, device=device,
+                )
+            except Exception as exc:
+                raise RuntimeError(f"Could not initialize GFPGAN: {exc}") from exc
     try:
-        import torch
-        from gfpgan import GFPGANer
-    except ModuleNotFoundError as exc:
-        missing = exc.name or "a dependency"
-        if missing == "gfpgan" or missing.startswith("gfpgan."):
-            raise RuntimeError(
-                "GFPGAN is not installed. Install the optional restoration stack, or uncheck face restoration."
-            ) from exc
-        raise RuntimeError(
-            f"GFPGAN failed to import: missing module '{missing}'. Run scripts/patch-basicsr.sh to fix "
-            "BasicSR's removed torchvision import, or see README.md for restoration setup."
-        ) from exc
-    except Exception as exc:
-        raise RuntimeError(f"GFPGAN failed to import: {exc}") from exc
-    try:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        restorer = GFPGANer(
-            model_path=str(model_path), upscale=1, arch="clean", channel_multiplier=2,
-            bg_upsampler=None, device=device,
+        _cropped_faces, restored_faces, _restored_image = _GFP_GANER.enhance(
+            face_crop, has_aligned=True, only_center_face=True,
+            paste_back=False, weight=float(np.clip(strength, 0.0, 1.0)),
         )
-        _cropped_faces, restored_faces, _restored_image = restorer.enhance(
-            face_crop, has_aligned=True, only_center_face=True, paste_back=False
+        if not restored_faces:
+            raise RuntimeError("GFPGAN did not return a restored face.")
+        return cv2.resize(
+            restored_faces[0], (face_crop.shape[1], face_crop.shape[0]),
+            interpolation=cv2.INTER_LANCZOS4,
         )
-        if restored_faces:
-            return cv2.resize(restored_faces[0], (face_crop.shape[1], face_crop.shape[0]), interpolation=cv2.INTER_LANCZOS4)
-        raise RuntimeError("GFPGAN did not return a restored face.")
     except RuntimeError:
         raise
     except Exception as exc:
         raise RuntimeError(f"GFPGAN restoration failed: {exc}") from exc
-
 
 def blend_face(
     target: np.ndarray,
@@ -265,7 +350,8 @@ def run_swap(
     blend_strength: float = 0.95,
     blend_mode: Literal["feather", "seamless"] = "feather",
     restore_face: bool = False,
-) -> tuple[str, str]:
+    merge_source_references: bool = False,
+) -> tuple[str, str, float | None]:
     face_app, swapper, providers = get_models()
     target = cv2.imread(str(target_path), cv2.IMREAD_COLOR)
     if target is None:
@@ -285,7 +371,9 @@ def run_swap(
             source_candidates.append((max(faces, key=face_area), image))
     if not source_candidates:
         raise RuntimeError("No face detected in source images. Try clearer, front-facing reference photos.")
-    source_face, _source_image = max(source_candidates, key=lambda candidate: face_area(candidate[0]))
+    source_face, source_embedding, source_note = prepare_source_identity(
+        source_candidates, merge_source_references
+    )
 
     try:
         # paste_back=False gives the 128x128 aligned face and its image-to-crop affine matrix.
@@ -293,7 +381,8 @@ def run_swap(
         aligned_target = cv2.warpAffine(target, affine, (128, 128), flags=cv2.INTER_LINEAR, borderValue=0)
         mask = make_face_mask(target_face, affine, 128)
         if restore_face:
-            swapped_crop = restore_face_optional(swapped_crop)
+            # GFPGAN can invent identity details; keep its restoration weight conservative.
+            swapped_crop = restore_face_optional(swapped_crop, strength=0.25)
         swapped_crop = match_lab_color(swapped_crop, aligned_target, mask, float(color_match_strength))
         result = blend_face(
             target, swapped_crop, affine, mask,
@@ -306,9 +395,11 @@ def run_swap(
 
     if not cv2.imwrite(str(output_path), result):
         raise RuntimeError("Could not save output image.")
+    identity_similarity = measure_identity_similarity(
+        face_app, result, source_embedding, target_face
+    )
     device = "CUDA GPU" if "CUDAExecutionProvider" in providers else "CPU"
-    source_note = "largest detected source face"
-    return device, source_note
+    return device, source_note, identity_similarity
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -324,6 +415,7 @@ async def composite(
     blend_strength: float = Form(0.95),
     blend_mode: Literal["feather", "seamless"] = Form("feather"),
     restore_face: bool = Form(False),
+    merge_source_references: bool = Form(False),
 ):
     if not sources:
         raise HTTPException(400, "Upload at least one source image.")
@@ -338,20 +430,30 @@ async def composite(
         saved_target = await save_image(target, job)
         output = OUTPUTS / f"{uuid.uuid4().hex}.png"
         try:
-            device, source_note = run_swap(
+            device, source_note, identity_similarity = run_swap(
                 saved_sources, saved_target, output,
                 color_match_strength=color_match_strength,
                 blend_strength=blend_strength,
                 blend_mode=blend_mode,
                 restore_face=restore_face,
+                merge_source_references=merge_source_references,
             )
         except RuntimeError as exc:
             raise HTTPException(503, str(exc)) from exc
         return {
             "ok": True,
             "output_url": f"/outputs/{output.name}",
-            "message": f"Completed locally using {device}. Source selected: {source_note}.",
+            "message": (
+                f"Completed locally using {device}. Source: {source_note}. "
+                + (
+                    f"ArcFace cosine diagnostic: {identity_similarity:.3f} "
+                    "(comparison signal, not a probability or guarantee)."
+                    if identity_similarity is not None
+                    else "Output identity diagnostic was unavailable."
+                )
+            ),
             "device": device,
+            "identity_similarity": identity_similarity,
         }
     finally:
         shutil.rmtree(job, ignore_errors=True)
