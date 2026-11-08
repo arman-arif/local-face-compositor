@@ -33,6 +33,28 @@ download() {
   [[ -s "$tmp" ]] || { echo "Empty download: $label" >&2; rm -f "$tmp"; exit 1; }
   mv "$tmp" "$dest"
 }
+
+download_verified() {
+  local url="$1" dest="$2" label="$3" expected_sha256="$4"
+  local actual_sha256
+  if [[ -s "$dest" ]]; then
+    actual_sha256="$(sha256sum "$dest" | awk '{print $1}')"
+    if [[ "$actual_sha256" == "$expected_sha256" ]]; then
+      echo "[skip] $label checksum verified"
+      return
+    fi
+    echo "[warning] Removing $label with an invalid SHA-256 checksum." >&2
+    rm -f "$dest"
+  fi
+  download "$url" "$dest" "$label"
+  actual_sha256="$(sha256sum "$dest" | awk '{print $1}')"
+  if [[ "$actual_sha256" != "$expected_sha256" ]]; then
+    rm -f "$dest"
+    echo "SHA-256 mismatch for $label; the file was removed." >&2
+    return 1
+  fi
+  echo "[verified] $label SHA-256"
+}
 download "https://github.com/deepinsight/insightface/releases/download/model-zoo/inswapper_128.onnx" "$MODEL_DIR/inswapper_128.onnx" "InSwapper-128"
 BUFFALO_ZIP="$MODEL_DIR/buffalo_l.zip"
 download "https://github.com/deepinsight/insightface/releases/download/model-zoo/buffalo_l.zip" "$BUFFALO_ZIP" "InsightFace buffalo_l"
@@ -45,8 +67,15 @@ fi
 }
 # GHOST is intentionally opt-in because its swapper file is very large.
 if [[ "$WITH_GHOST" -eq 1 ]]; then
-  download "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/ghost_1_256.onnx" "$MODEL_DIR/ghost_1_256.onnx" "GHOST-1 256"
-  download "https://github.com/facefusion/facefusion-assets/releases/download/models-3.4.0/crossface_ghost.onnx" "$MODEL_DIR/crossface_ghost.onnx" "GHOST embedding converter"
+  command -v sha256sum >/dev/null 2>&1 || { echo "Install coreutils (sha256sum) first." >&2; exit 1; }
+  download_verified \
+    "https://github.com/facefusion/facefusion-assets/releases/download/models-3.0.0/ghost_1_256.onnx" \
+    "$MODEL_DIR/ghost_1_256.onnx" "GHOST-1 256" \
+    "4eac28021ae80128e9262080cf0da850e3190e41862650c9e805f9a516b3e924"
+  download_verified \
+    "https://github.com/facefusion/facefusion-assets/releases/download/models-3.4.0/crossface_ghost.onnx" \
+    "$MODEL_DIR/crossface_ghost.onnx" "GHOST embedding converter" \
+    "9ec5862d9ff1f723a7380ea89baf87cddec9c56670d4db766702657939284957"
 else
   echo "[skip] GHOST assets not requested. Use --with-ghost to download the experimental model."
 fi
