@@ -66,7 +66,7 @@ Select **Optional face restoration** in the UI to run low-strength restoration. 
 1. Detect faces in the target and every source image.
 2. Select the largest/high-confidence face in the target and one detected face per source photo.
 3. By default, use the best detected source face. Optionally enable **Combine same-person references** to quality-weight normalized ArcFace embeddings from multiple source photos. Reference weights consider detector confidence, face size and sharpness. Use this only when every reference depicts the same person; likely mixed identities are rejected.
-4. Run the local InSwapper model to create an aligned 128×128 crop.
+4. Run the selected face-swap adapter to create its model-specific aligned face crop (InSwapper 128×128 by default; experimental GHOST 256×256 when selected).
 5. Optionally apply cached, low-strength GFPGAN restoration. It remains opt-in because restoration can invent or alter identity details.
 6. Match LAB statistics conservatively against the target's aligned face crop.
 7. Warp the crop and convex-hull facial mask into the target image, then feather-blend or try OpenCV seamless clone.
@@ -131,4 +131,4 @@ pip install -r requirements/dev.txt
 pytest -q tests/test_face_swap_models.py
 ```
 
-The benchmark runner currently reports identity similarity and inference time; visual quality still requires human review. No model weights or representative evaluation dataset are committed. Until the model weights are installed and inference is run, GHOST compatibility and quality remain unverified. InSwapper remains the default.
+The benchmark runner reports repeated end-to-end runtime and an ArcFace identity diagnostic; it does not calculate LPIPS, landmark drift, occlusion preservation or boundary quality. Those still require a separate evaluation stage and human visual review. No model weights or representative evaluation dataset are committed. Until the model weights are installed and inference is run, GHOST compatibility and quality remain unverified. InSwapper remains the default.
