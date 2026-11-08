@@ -30,7 +30,7 @@ MAX_IMAGE_SIDE = 10000
 # Expensive model initialization is cached for later requests.
 _MODEL_LOCK = threading.Lock()
 _FACE_APP = None
-_SWAPPER = None
+_SWAPPERS = {}
 _PROVIDER_NAMES: list[str] = []
 _GFP_GANER = None
 _RESTORER_LOCK = threading.Lock()
@@ -58,27 +58,20 @@ async def save_image(upload: UploadFile, folder: Path) -> Path:
     return path
 
 
-def get_models():
-    """Initialize InsightFace once; use CUDA when ONNX Runtime has a CUDA provider."""
-    global _FACE_APP, _SWAPPER, _PROVIDER_NAMES
-    if _FACE_APP is not None and _SWAPPER is not None:
-        return _FACE_APP, _SWAPPER, _PROVIDER_NAMES
+def get_models(model_name: str = "inswapper_128"):
+    """Initialize InsightFace once and cache model-specific swap adapters."""
+    global _FACE_APP, _SWAPPERS, _PROVIDER_NAMES
+    if _FACE_APP is not None and model_name in _SWAPPERS:
+        return _FACE_APP, _SWAPPERS[model_name], _PROVIDER_NAMES
     with _MODEL_LOCK:
-        if _FACE_APP is not None and _SWAPPER is not None:
-            return _FACE_APP, _SWAPPER, _PROVIDER_NAMES
+        if _FACE_APP is not None and model_name in _SWAPPERS:
+            return _FACE_APP, _SWAPPERS[model_name], _PROVIDER_NAMES
         try:
             from insightface.app import FaceAnalysis
-            from insightface.model_zoo import get_model
         except Exception as exc:
             raise RuntimeError(
                 "InsightFace is not installed. Activate your virtual environment and run pip install -r requirements.txt."
             ) from exc
-
-        model_path = MODELS / "inswapper_128.onnx"
-        if not model_path.exists():
-            raise RuntimeError(
-                "Missing models/inswapper_128.onnx. Add a face-swap model you are licensed to use; model weights are not bundled."
-            )
 
         available = ort.get_available_providers()
         providers = (["CUDAExecutionProvider", "CPUExecutionProvider"]
@@ -91,13 +84,15 @@ def get_models():
                 root=str(INSIGHTFACE_ROOT),
             )
             face_app.prepare(ctx_id=ctx_id, det_size=(640, 640))
-            swapper = get_model(str(model_path), providers=providers)
+            from face_swap_models import create_swapper
+            swapper = create_swapper(model_name, MODELS, providers)
         except Exception as exc:
             raise RuntimeError(
                 f"Could not initialize InsightFace models. Check the model files and ONNX Runtime installation. Details: {exc}"
             ) from exc
-        _FACE_APP, _SWAPPER, _PROVIDER_NAMES = face_app, swapper, providers
-        return _FACE_APP, _SWAPPER, _PROVIDER_NAMES
+        _FACE_APP, _PROVIDER_NAMES = face_app, providers
+        _SWAPPERS[model_name] = swapper
+        return _FACE_APP, swapper, _PROVIDER_NAMES
 
 
 def face_area(face) -> float:
@@ -351,8 +346,9 @@ def run_swap(
     blend_mode: Literal["feather", "seamless"] = "feather",
     restore_face: bool = False,
     merge_source_references: bool = False,
+    swap_model: Literal["inswapper_128", "ghost_1_256"] = "inswapper_128",
 ) -> tuple[str, str, float | None]:
-    face_app, swapper, providers = get_models()
+    face_app, swapper, providers = get_models(swap_model)
     target = cv2.imread(str(target_path), cv2.IMREAD_COLOR)
     if target is None:
         raise RuntimeError("Could not decode the target image.")
@@ -376,10 +372,13 @@ def run_swap(
     )
 
     try:
-        # paste_back=False gives the 128x128 aligned face and its image-to-crop affine matrix.
+        # Each adapter returns its own aligned crop size and image-to-crop affine matrix.
         swapped_crop, affine = swapper.get(target, target_face, source_face, paste_back=False)
-        aligned_target = cv2.warpAffine(target, affine, (128, 128), flags=cv2.INTER_LINEAR, borderValue=0)
-        mask = make_face_mask(target_face, affine, 128)
+        crop_size = int(swapped_crop.shape[0])
+        if swapped_crop.shape[:2] != (crop_size, crop_size):
+            raise RuntimeError(f"Swap model returned a non-square crop: {swapped_crop.shape}")
+        aligned_target = cv2.warpAffine(target, affine, (crop_size, crop_size), flags=cv2.INTER_LINEAR, borderValue=0)
+        mask = make_face_mask(target_face, affine, crop_size)
         if restore_face:
             # GFPGAN can invent identity details; keep its restoration weight conservative.
             swapped_crop = restore_face_optional(swapped_crop, strength=0.25)
@@ -416,6 +415,7 @@ async def composite(
     blend_mode: Literal["feather", "seamless"] = Form("feather"),
     restore_face: bool = Form(False),
     merge_source_references: bool = Form(False),
+    swap_model: Literal["inswapper_128", "ghost_1_256"] = Form("inswapper_128"),
 ):
     if not sources:
         raise HTTPException(400, "Upload at least one source image.")
@@ -437,6 +437,7 @@ async def composite(
                 blend_mode=blend_mode,
                 restore_face=restore_face,
                 merge_source_references=merge_source_references,
+                swap_model=swap_model,
             )
         except RuntimeError as exc:
             raise HTTPException(503, str(exc)) from exc
@@ -454,6 +455,7 @@ async def composite(
             ),
             "device": device,
             "identity_similarity": identity_similarity,
+            "swap_model": swap_model,
         }
     finally:
         shutil.rmtree(job, ignore_errors=True)
@@ -464,6 +466,10 @@ def health():
     return {
         "ok": True,
         "swap_model_present": (MODELS / "inswapper_128.onnx").exists(),
+        "available_swap_models": {
+            "inswapper_128": (MODELS / "inswapper_128.onnx").is_file(),
+            "ghost_1_256": (MODELS / "ghost_1_256.onnx").is_file() and (MODELS / "crossface_ghost.onnx").is_file(),
+        },
         "restoration_model_present": (MODELS / "GFPGANv1.4.pth").exists(),
         "onnx_providers": ort.get_available_providers(),
     }
