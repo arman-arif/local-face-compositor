@@ -143,7 +143,8 @@ def prepare_source_identity(source_candidates, merge_references: bool):
     best_face, _best_image = max(source_candidates, key=lambda item: face_area(item[0]))
     if not merge_references or len(source_candidates) == 1:
         embedding = normalized_embedding(best_face)
-        return SimpleNamespace(normed_embedding=embedding), embedding, "best detected source face"
+        raw_embedding = np.asarray(getattr(best_face, "embedding", embedding), dtype=np.float32).reshape(-1)
+        return SimpleNamespace(normed_embedding=embedding, embedding=raw_embedding), embedding, "best detected source face"
 
     embeddings = np.stack([normalized_embedding(face) for face, _image in source_candidates])
     if len({vector.shape for vector in embeddings}) != 1:
@@ -168,7 +169,7 @@ def prepare_source_identity(source_candidates, merge_references: bool):
         raise RuntimeError("Could not combine the source identity embeddings.")
     fused /= fused_norm
     return (
-        SimpleNamespace(normed_embedding=fused),
+        SimpleNamespace(normed_embedding=fused, embedding=fused),
         fused,
         f"merged identity embeddings from {len(source_candidates)} same-person reference photos",
     )
