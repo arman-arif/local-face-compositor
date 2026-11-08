@@ -783,7 +783,8 @@ function deviceName() {
   return (state.health.onnx_providers || []).includes('CUDAExecutionProvider') ? 'CUDA GPU' : 'CPU';
 }
 function swapModelMissing() {
-  return Boolean(state.health) && !state.offline && !state.health.swap_model_present;
+  return Boolean(state.health) && !state.offline
+    && !Boolean((state.health.available_swap_models || {})[$('swapModel').value]);
 }
 function renderHealth() {
   const chip = (text, tone) => {
@@ -807,7 +808,10 @@ function renderHealth() {
     option.disabled = !ready;
     if (option.value === 'ghost_1_256' && !ready) option.textContent = 'GHOST 256 (model files missing)';
   });
-  if (modelSelect.selectedOptions[0]?.disabled) modelSelect.value = 'inswapper_128';
+  if (modelSelect.selectedOptions[0]?.disabled) {
+    modelSelect.value = available.inswapper_128 ? 'inswapper_128'
+      : available.ghost_1_256 ? 'ghost_1_256' : 'inswapper_128';
+  }
   $('swapModelHint').textContent = available.ghost_1_256
     ? 'GHOST is experimental. Compare results; 256px does not guarantee better identity fidelity.'
     : 'GHOST requires ghost_1_256.onnx and crossface_ghost.onnx in models/.';
@@ -818,8 +822,10 @@ function renderHealth() {
     $('bannerBody').innerHTML = 'Start it with <code>uvicorn app:app --host 127.0.0.1 --port 8000</code>.';
     $('banner').hidden = false;
   } else if (swapModelMissing()) {
-    $('bannerTitle').textContent = 'Face-swap model not found';
-    $('bannerBody').innerHTML = 'Add a model you are licensed to use at <code>models/inswapper_128.onnx</code>. Weights are not bundled.';
+    $('bannerTitle').textContent = 'Selected face-swap model not found';
+    $('bannerBody').textContent = $('swapModel').value === 'ghost_1_256'
+      ? 'Add ghost_1_256.onnx and crossface_ghost.onnx to the models directory.'
+      : 'Add inswapper_128.onnx to the models directory. Model weights are not bundled.';
     $('banner').hidden = false;
   } else {
     $('banner').hidden = true;
