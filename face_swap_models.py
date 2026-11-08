@@ -48,8 +48,8 @@ class Ghost256Swapper:
         if affine is None or not np.isfinite(affine).all():
             raise RuntimeError("Could not align face for GHOST.")
         crop = cv2.warpAffine(
-            image, affine, (256, 256), flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_REPLICATE, flags=cv2.INTER_AREA,
+            image, affine, (256, 256), flags=cv2.INTER_AREA,
+            borderMode=cv2.BORDER_REPLICATE,
         )
         return crop, affine.astype(np.float32)
 
