@@ -78,12 +78,14 @@ def get_models(model_name: str = "inswapper_128"):
                      if "CUDAExecutionProvider" in available else ["CPUExecutionProvider"])
         ctx_id = 0 if "CUDAExecutionProvider" in available else -1
         try:
-            face_app = FaceAnalysis(
-                name="buffalo_l",
-                providers=providers,
-                root=str(INSIGHTFACE_ROOT),
-            )
-            face_app.prepare(ctx_id=ctx_id, det_size=(640, 640))
+            face_app = _FACE_APP
+            if face_app is None:
+                face_app = FaceAnalysis(
+                    name="buffalo_l",
+                    providers=providers,
+                    root=str(INSIGHTFACE_ROOT),
+                )
+                face_app.prepare(ctx_id=ctx_id, det_size=(640, 640))
             from face_swap_models import create_swapper
             swapper = create_swapper(model_name, MODELS, providers)
         except Exception as exc:
