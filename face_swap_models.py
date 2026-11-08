@@ -4,9 +4,13 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
-ARCFACE_112 = np.array([
-    [38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366],
-    [41.5493, 92.3655], [70.7299, 92.2041],
+# FaceFusion's exact arcface_112_v1 warp template (normalized to 112px).
+ARCFACE_112_V1 = np.array([
+    [0.35473214, 0.45658929],
+    [0.64526786, 0.45658929],
+    [0.50000000, 0.61154464],
+    [0.37913393, 0.77687500],
+    [0.62086607, 0.77687500],
 ], dtype=np.float32)
 
 
@@ -26,8 +30,8 @@ class Ghost256Swapper:
         names = {item.name for item in self.swap.get_inputs()}
         if not {"source", "target"}.issubset(names):
             raise RuntimeError(f"Unexpected GHOST input signature: {sorted(names)}")
-        if len(self.converter.get_inputs()) != 1:
-            raise RuntimeError("Unexpected GHOST embedding-converter signature.")
+        if len(self.converter.get_inputs()) != 1 or self.converter.get_inputs()[0].name != "input":
+            raise RuntimeError("GHOST embedding converter must expose its expected 'input' tensor.")
         self.converter_input = self.converter.get_inputs()[0]
 
     @staticmethod
@@ -37,14 +41,15 @@ class Ghost256Swapper:
             raise RuntimeError("GHOST requires five facial landmarks.")
         affine, _ = cv2.estimateAffinePartial2D(
             np.asarray(kps, dtype=np.float32),
-            ARCFACE_112 * (256.0 / 112.0),
-            method=cv2.LMEDS,
+            ARCFACE_112_V1 * 256.0,
+            method=cv2.RANSAC,
+            ransacReprojThreshold=100,
         )
         if affine is None or not np.isfinite(affine).all():
             raise RuntimeError("Could not align face for GHOST.")
         crop = cv2.warpAffine(
             image, affine, (256, 256), flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+            borderMode=cv2.BORDER_REPLICATE, flags=cv2.INTER_AREA,
         )
         return crop, affine.astype(np.float32)
 
@@ -64,7 +69,7 @@ class Ghost256Swapper:
         norm = float(np.linalg.norm(converted))
         if not np.isfinite(converted).all() or norm < 1e-8:
             raise RuntimeError("GHOST embedding conversion returned an invalid vector.")
-        converted /= norm
+        # FaceFusion passes the converter's raw output to GHOST; do not L2-normalize it.
 
         aligned, affine = self.align(target, target_face)
         rgb = cv2.cvtColor(aligned, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
@@ -80,7 +85,7 @@ class Ghost256Swapper:
         else:
             raise RuntimeError(f"GHOST output has no 3-channel axis: {result.shape}")
         if result.shape[:2] != (256, 256):
-            result = cv2.resize(result, (256, 256), interpolation=cv2.INTER_CUBIC)
+            raise RuntimeError(f"Expected a 256x256 GHOST output crop, got {result.shape[:2]}.")
         rgb_out = np.clip((result * 0.5 + 0.5) * 255.0, 0, 255).astype(np.uint8)
         return cv2.cvtColor(rgb_out, cv2.COLOR_RGB2BGR), affine
 
