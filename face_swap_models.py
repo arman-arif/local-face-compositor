@@ -27,12 +27,21 @@ class Ghost256Swapper:
         self.swap = _session(model_dir / "ghost_1_256.onnx", providers)
         self.converter = _session(model_dir / "crossface_ghost.onnx", providers)
         self.providers = providers
-        names = {item.name for item in self.swap.get_inputs()}
-        if not {"source", "target"}.issubset(names):
-            raise RuntimeError(f"Unexpected GHOST input signature: {sorted(names)}")
-        if len(self.converter.get_inputs()) != 1 or self.converter.get_inputs()[0].name != "input":
+        swap_inputs = {item.name: item for item in self.swap.get_inputs()}
+        if not {"source", "target"}.issubset(swap_inputs):
+            raise RuntimeError(f"Unexpected GHOST input signature: {sorted(swap_inputs)}")
+        source_shape = swap_inputs["source"].shape
+        target_shape = swap_inputs["target"].shape
+        if len(source_shape) != 2 or source_shape[-1] not in (512, "512", None):
+            raise RuntimeError(f"Unexpected GHOST source tensor shape: {source_shape}")
+        if len(target_shape) != 4 or target_shape[1:] != [3, 256, 256]:
+            raise RuntimeError(f"Unexpected GHOST target tensor shape: {target_shape}")
+        converter_inputs = self.converter.get_inputs()
+        if len(converter_inputs) != 1 or converter_inputs[0].name != "input":
             raise RuntimeError("GHOST embedding converter must expose its expected 'input' tensor.")
-        self.converter_input = self.converter.get_inputs()[0]
+        if len(converter_inputs[0].shape) != 2 or converter_inputs[0].shape[-1] not in (512, "512", None):
+            raise RuntimeError(f"Unexpected GHOST converter input shape: {converter_inputs[0].shape}")
+        self.converter_input = converter_inputs[0]
 
     @staticmethod
     def align(image, face):
@@ -76,6 +85,8 @@ class Ghost256Swapper:
         tensor = ((rgb - 0.5) / 0.5).transpose(2, 0, 1)[None].astype(np.float32)
         result = self.swap.run(None, {"source": converted, "target": tensor})[0]
         result = np.asarray(result, dtype=np.float32)
+        if not np.isfinite(result).all():
+            raise RuntimeError("GHOST returned non-finite pixel values.")
         if result.ndim != 4:
             raise RuntimeError(f"Unexpected GHOST output shape: {result.shape}")
         if result.shape[1] == 3:
