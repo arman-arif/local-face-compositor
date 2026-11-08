@@ -798,7 +798,8 @@ function renderHealth() {
   if (state.offline) {
     chips.push(chip('Server not responding', 'bad'));
   } else if (state.health) {
-    chips.push(chip(state.health.swap_model_present ? 'Swap model ready' : 'Swap model missing', state.health.swap_model_present ? 'ok' : 'bad'));
+    const selectedReady = Boolean((state.health.available_swap_models || {})[$('swapModel').value]);
+    chips.push(chip(selectedReady ? 'Selected model ready' : 'Selected model missing', selectedReady ? 'ok' : 'bad'));
     chips.push(chip(`Runs on ${deviceName()}`, 'neutral'));
   }
   const available = state.health?.available_swap_models || {};
